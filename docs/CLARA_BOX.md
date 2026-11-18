@@ -138,6 +138,12 @@ without anyone knowing:
   command and a one-line description. Stopping or expiring a server never deletes its files;
   `box-app restart NAME` brings it back, and `box-app forget NAME` drops the entry (files stay).
 
+**By voice**, the relay does short requests about these pages itself with box-app, with no Claude
+Code run: what is running, what is in the library, and stopping, keeping, making temporary or
+bringing back one page, matched by the words of its name or description. If it cannot tell which
+page you mean, it asks. A request that also asks for work ("stop the scatter plot and add a
+legend to the weather page") goes to Claude Code whole.
+
 **On the control page**, the **Box** tab shows all of this: the running servers with a link to
 each, Keep / Make temporary / Stop buttons, anything on those ports that box-app did not start
 (Adopt / Stop), and the library with Start again / Forget. The page asks the relay, which is the

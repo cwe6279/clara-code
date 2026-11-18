@@ -222,3 +222,60 @@ def test_box_endpoints_pass_only_checked_arguments(tmp_path):
                 ("shell", {"name": "web"}), ("forget", {"name": "../x"})]:
         assert R.box_action(runner, *bad)[0] in (400, 404), bad
     assert runner.box_calls == [["list", "--json"], ["stop", "web"], ["restart", "web", "--keep"], ["adopt", "x", "8105"]]
+
+
+class VoiceBox(FakeRunner):
+    """box-app in a fake box: two running pages, one stopped one in the library."""
+
+    def __init__(self, replies=()):
+        super().__init__(list(replies))
+        self.box_calls = []
+        self.apps = [{"name": "rye-weather", "port": 8100, "keep": True, "expires_in_h": None,
+                      "about": "the weather, news and markets dashboard"},
+                     {"name": "scatter3d", "port": 8101, "keep": False, "expires_in_h": 23.6,
+                      "about": "a 3D scatter plot"}]
+        self.lib = [dict(a, running=True, dir_exists=True) for a in self.apps] + \
+                   [{"name": "expense-tracker", "about": "an expense tracker", "running": False, "dir_exists": True}]
+
+    def box_app(self, args, timeout=30):
+        self.box_calls.append(args)
+        if args[0] == "list":
+            return 0, json.dumps({"apps": self.apps, "library": self.lib, "strays": [], "settings": {}})
+        if args[0] == "restart":
+            return 0, f"{args[1]}: http://localhost:8102 on the owner's computer"
+        return 0, "ok"
+
+
+def _say(relay, text):
+    return _wait(relay, relay.submit(text))["summary"]
+
+
+def test_voice_requests_about_box_pages_skip_claude_code(tmp_path):
+    runner = VoiceBox()
+    relay = R.Relay(tmp_path / "s.json", R.Ledger(tmp_path / "c.jsonl"), runner)
+    s = _say(relay, "What's running in your box?")
+    assert "2 pages are running" in s and "localhost port 8100" in s and "kept" in s and "24 hours left" in s
+    assert "Stopped the 3D scatter plot" in _say(relay, "Stop the 3D scatter plot")
+    assert runner.box_calls[-1] == ["stop", "scatter3d"]
+    assert "is kept" in _say(relay, "Please keep the weather dashboard running")
+    assert runner.box_calls[-1] == ["keep", "rye-weather"]
+    assert "temporary again" in _say(relay, "make the weather page temporary")
+    s = _say(relay, "Bring back the expense tracker")
+    assert runner.box_calls[-1] == ["restart", "expense-tracker"] and "localhost port 8102" in s
+    assert "already running" in _say(relay, "open the scatter plot again")
+    assert "library has 3" in _say(relay, "What's in your library?")
+    assert "Which one?" in _say(relay, "stop the page")
+    assert not runner.calls                                     # none of these ran Claude Code
+
+
+def test_anything_unclear_still_goes_to_claude_code(tmp_path):
+    jobs = ["Build a page that keeps track of my stops", "stop the scatter plot and add a legend to the weather page",
+            "open a page that shows the tides", "Keep a log of what I spend on coffee",
+            "Research which servers are running the new kernel"]
+    runner = VoiceBox([_reply("ok") for _ in jobs])
+    relay = R.Relay(tmp_path / "s.json", R.Ledger(tmp_path / "c.jsonl"), runner)
+    for j in jobs:
+        _wait(relay, relay.submit(j, sender=""))
+        relay.last_at = 0
+    assert len(runner.calls) == len(jobs)
+    assert not [c for c in runner.box_calls if c[0] != "list"]  # nothing was stopped, kept or started

@@ -27,6 +27,10 @@ How a task runs:
   * "sonnet" or "opus" in the task picks that model; otherwise haiku (cheap).
   * "How much has Claude Code cost" is answered from the spending ledger, with no
     Claude Code run. The ledger is on this machine, where the box cannot edit it.
+  * Short requests about the pages the box serves ("what's running in your box", "stop the
+    scatter plot", "keep the weather page", "bring back the scatter plot", "what's in your
+    library") are done with box-app directly, also with no Claude Code run. Anything less clear
+    goes to Claude Code, which can use box-app itself.
   * Tasks run one at a time, so two never write to the same session.
 
 Settings (environment):
@@ -67,6 +71,8 @@ BOX_PORTS = range(8100, 8120)
 SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")   # a session id goes on a command line: nothing else passes
 
 COST_RE = re.compile(r"\b(cost|costs|spent|spend|spending|bill)\b", re.I)
+# ... and about Claude Code itself: "keep a log of what I spend on coffee" is a job
+COST_ABOUT_RE = re.compile(r"\b(claude|you|your|yourself|the box|jobs?|so far|this month|today|allowance|budget)\b", re.I)
 BUILD_RE = re.compile(r"\b(build|make|create|write|track(er|ing)?|app|page|script)\b", re.I)
 FRESH_RE = re.compile(r"\b(new job|new task|start fresh|fresh start|from scratch|separate job)\b", re.I)
 QUESTION_RE = re.compile(r"^\s*\**QUESTION\**\s*:\s*", re.I)
@@ -274,7 +280,18 @@ class Relay:
     def _work(self, tid: str, answer: str | None) -> None:
         t = self.tasks[tid]
         text = t["task"]
-        if answer is None and COST_RE.search(text) and not BUILD_RE.search(text):
+        if answer is None:
+            try:
+                spoken = box_voice(self.runner, text)
+            except Exception as e:                       # never let the shortcut lose a job
+                print(f"[relay] {tid} box shortcut failed ({e}); passing it to Claude Code")
+                spoken = None
+            if spoken:
+                self._set(tid, state="done", summary=spoken, result=spoken)
+                print(f"[relay] {tid} done with box-app, no Claude Code run: {spoken[:90]}")
+                return
+        if answer is None and COST_RE.search(text) and COST_ABOUT_RE.search(text) and not BUILD_RE.search(text) \
+                and not re.search(r"\b(log|record|keep)\b", text, re.I):
             s = self.ledger.spoken_summary()
             self._set(tid, state="done", summary=s, result=s)
             print(f"[relay] {tid} cost question answered from the ledger")
@@ -369,6 +386,148 @@ def box_action(runner, action: str, body: dict) -> tuple:
         return 404, {"error": "not found"}
     code, out = runner.box_app(args)
     return (200, {"message": out}) if code == 0 else (400 if code == 1 else 502, {"error": out})
+
+
+# ── the box's pages, by voice ─────────────────────────────────────────────────
+VOICE_PREFIX_RE = re.compile(r"^(?:\s*(?:please|ask claude code to|have claude code|tell claude code to|"
+                             r"can you|could you|in (?:the|your) box,?|on (?:the|your) box,?)\s+)+", re.I)
+VOICE_BUILD_RE = re.compile(r"\b(build|create|write|add|change|fix|update|edit|redesign|refactor|improve|"
+                            r"research|find|search|look up|compare|log|track|"
+                            r"make (?:a|an|me|it look|some|the page)\b|so that|which shows|that shows)\b", re.I)
+VOICE_LIST_RE = re.compile(r"\b(what|which)\b.{0,40}\b(running|up|serving|open|live)\b|"
+                           r"\blist\b.{0,25}\b(servers|pages|apps|sites)\b", re.I)
+VOICE_LIBRARY_RE = re.compile(r"\blibrary\b|\bwhat (?:pages|apps|sites|things) (?:have|has|did) (?:you|it|claude code)"
+                              r" (?:built|made)\b|\bwhat have you built\b", re.I)
+VOICE_ACTIONS = [
+    ("unkeep", re.compile(r"^(?:make|set)\b.{0,50}\btemporary\b|^(?:let)\b.{0,50}\b(?:expire|stop on its own)\b", re.I)),
+    ("stop", re.compile(r"^(?:stop|shut (?:down|off)|turn off|kill|close)\b", re.I)),
+    ("keep", re.compile(r"^keep\b", re.I)),
+    ("restart", re.compile(r"^(?:restart|bring back|reopen|re-open|turn\b.{0,40}\bback on|"
+                           r"(?:start|open|run)\b.{0,50}\bagain)\b", re.I)),
+    ("open", re.compile(r"^(?:open|pull up)\b", re.I)),
+]
+# a listing has to be about the box itself, not servers in general
+VOICE_SERVER_WORDS = re.compile(r"\b(box|you(?:'re| are)? (?:serving|running|hosting)|have (?:you )?(?:got )?(?:running|up))\b", re.I)
+_STOP_WORDS = set("""the a an my your our this that it its one ones please in on of to for with and or which is are
+    page pages app apps server servers site sites box running up again back now thing claude code also too
+    there here just me us all can you could would will be
+    stop shut down off turn kill close keep make set temporary let expire restart bring reopen re start
+    open pull run again what whats which s list library have has built made""".split())
+
+
+def _words(text: str) -> set:
+    t = re.sub(r"\b(three|3)[ -]?d\b", "3d", text.lower())
+    out = set()
+    for w in re.findall(r"[a-z0-9]+", t):
+        out.add(w)
+        for part in re.findall(r"[a-z]+|[0-9]+[a-z]?", w):   # scatter3d -> scatter, 3d
+            out.add(part)
+        if len(w) > 3 and w.endswith("s"):
+            out.add(w[:-1])
+    return out - _STOP_WORDS
+
+
+def _pick(entries: list, text: str) -> tuple:
+    """(entry, None) for the one entry the words point at, or (None, why) when none or several do."""
+    want = _words(text)
+    if not want and entries:                             # "stop the page": fine if there is only one
+        return (entries[0], None) if len(entries) == 1 else (None, "several")
+    scored = []
+    for e in entries:
+        have = _words(e["name"].replace("-", " ")) | _words(e.get("about") or "")
+        scored.append((len(want & have), e))
+    best = max((s for s, _ in scored), default=0)
+    hits = [e for s, e in scored if s == best and s > 0]
+    if len(hits) == 1:
+        return hits[0], None
+    if not entries:
+        return None, "none"
+    return None, "several" if hits else "none"
+
+
+def _spoken_name(e: dict) -> str:
+    """'the 3D scatter plot', from its one-line description (or its name)."""
+    about = (e.get("about") or "").strip().rstrip(".")
+    if not about:
+        return "the " + e["name"].replace("-", " ")
+    return re.sub(r"^(a|an)\s+", "the ", about, flags=re.I)
+
+
+def _spoken_list(names: list) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def box_voice(runner, text: str):
+    """A spoken answer for a short request about the box's pages, done with box-app; None to leave it
+    to Claude Code."""
+    t = VOICE_PREFIX_RE.sub("", text.strip()).strip().rstrip(".!?")
+    if not t or len(t.split()) > 16 or VOICE_BUILD_RE.search(t) or not hasattr(runner, "box_app"):
+        return None
+    action = next((a for a, rx in VOICE_ACTIONS if rx.search(t)), None)
+    listing = action is None and VOICE_LIST_RE.search(t) and VOICE_SERVER_WORDS.search(t)
+    library = action is None and not listing and VOICE_LIBRARY_RE.search(t)
+    if not (action or listing or library):
+        return None
+    code, out = runner.box_app(["list", "--json"])
+    if code != 0:
+        return "I can't reach my box right now; it may be off." if code == 255 else None
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    apps, lib = data.get("apps", []), data.get("library", [])
+    if listing:
+        if not apps:
+            return "Nothing is running in my box right now."
+        parts = [f"{_spoken_name(a)} at localhost port {a['port']}, "
+                 + ("kept" if a.get("keep") else f"temporary, {max(0, round(a.get('expires_in_h') or 0))} hours left")
+                 for a in apps]
+        n = len(apps)
+        return f"{'One page is' if n == 1 else f'{n} pages are'} running in my box: " + "; ".join(parts) + "."
+    if library:
+        if not lib:
+            return "My library is empty: nothing has been served from the box yet."
+        stopped = [e for e in lib if not e.get("running")]
+        names = [_spoken_name(e) for e in lib[:8]]
+        more = f", and {len(lib) - 8} more" if len(lib) > 8 else ""
+        return (f"My library has {len(lib)}: {_spoken_list(names)}{more}. "
+                + (f"{len(lib) - len(stopped)} running, {len(stopped)} stopped; I can bring any of them back."
+                   if stopped else "All of them are running."))
+    running = {a["name"]: a for a in apps}
+    if action in ("stop", "keep", "unkeep"):
+        e, why = _pick(apps, t)
+        if e is None:
+            gone, _ = _pick([x for x in lib if not x.get("running")], t)
+            if gone and why == "none":
+                return f"{_spoken_name(gone).capitalize()} isn't running. It's in my library if you want it back."
+            if why == "several":
+                return f"Which one? Running now: {_spoken_list([_spoken_name(a) for a in apps])}."
+            return None                                     # not about a page we have: a job for Claude Code
+        code, out = runner.box_app([action, e["name"]])
+        if code != 0:
+            return f"That didn't work: {out}"
+        return {"stop": f"Stopped {_spoken_name(e)}. Its files are kept, and I can bring it back any time.",
+                "keep": f"{_spoken_name(e).capitalize()} is kept: it stays up, even after the box restarts.",
+                "unkeep": f"{_spoken_name(e).capitalize()} is temporary again: it stops by itself in a day."}[action]
+    # restart / open: anything in the library
+    e, why = _pick(lib, t)
+    if e is None:
+        if not lib:
+            return "My library is empty, so there is nothing to bring back." if action == "restart" else None
+        if action == "open" and why == "none":
+            return None                                     # "open a page that ..." is a job, not a lookup
+        return (f"Which one? {_spoken_list([_spoken_name(x) for x in lib[:6]])}?" if why == "several"
+                else "I don't have a page like that in my library.")
+    if e["name"] in running:
+        return f"{_spoken_name(e).capitalize()} is already running, at localhost port {running[e['name']]['port']}."
+    if not e.get("dir_exists", True):
+        return f"I can't bring back {_spoken_name(e)}: its folder is gone."
+    code, out = runner.box_app(["restart", e["name"]])
+    if code != 0:
+        return f"That didn't work: {out}"
+    m = re.search(r"localhost:(\d+)", out)
+    where = f" at localhost port {m.group(1)}" if m else ""
+    return f"{_spoken_name(e).capitalize()} is back{where}. It's temporary: it stops in a day unless you say keep it."
 
 
 def _untrusted(text: str) -> str:

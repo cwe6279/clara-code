@@ -123,6 +123,10 @@ Clara running after you log out, wrap the two commands in systemd user units of 
   "new job" to start fresh.
 - **Pick a model:** say "use Sonnet" or "use Opus" in the request.
 - **Check spending:** "What has Claude Code cost so far?", or `clara-box-costs` on the host.
+- **Manage its pages by voice:** "What's running in your box?", "Stop the scatter plot", "Keep
+  the weather page", "Bring back the expense tracker", "What's in your library?". These are done
+  straight away without a Claude Code run, so they cost nothing. Anything less clear-cut goes to
+  Claude Code as a normal job.
 - **Watch it work:** `clara-box` opens the VM's tmux session; each job is a window.
 - **See a page it built:** servers in the box appear on the host at `http://localhost:8100` to
   `8119`. They stop after a day unless you say "keep it". The control page's **Box** tab lists

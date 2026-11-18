@@ -96,7 +96,8 @@
   "errands": [
     "hand any job to Claude Code on your own computer (your box): research on the web, read pages, write and run code, build and fix things, make files",
     "pass on follow-ups to the job it just did, and bring its questions back to the owner",
-    "say what Claude Code has cost so far"
+    "say what Claude Code has cost so far",
+    "say which pages your box is serving and what is in its library of earlier ones, and stop, keep or bring back one of them (pages stop after a day unless kept)"
   ],
   "dictation_words": [
     "take this down",
