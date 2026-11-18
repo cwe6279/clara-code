@@ -100,7 +100,7 @@ page), then build for the board:
 
 ```
 cd ~/esp/xiaozhi-esp32
-echo 'CONFIG_OTA_URL="http://192.168.68.79:8030/xiaozhi/ota/"' >> sdkconfig.defaults
+echo 'CONFIG_OTA_URL="http://192.168.1.50:8030/xiaozhi/ota/"' >> sdkconfig.defaults
 source ~/esp/esp-idf/export.sh
 python scripts/build.py waveshare/esp32-s3-touch-amoled-1.8-v2
 ```

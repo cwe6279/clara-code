@@ -68,7 +68,7 @@ model on a llama.cpp box on the LAN:
 
 ```bash
 cd ~/Projects/fuse-agents
-LLAMACPP_BASE_URL=http://192.168.68.81:8091/v1 FORCE_LOCAL_MODEL=llamacpp_gemma4 \
+LLAMACPP_BASE_URL=http://192.168.1.51:8091/v1 FORCE_LOCAL_MODEL=llamacpp_gemma4 \
 LLAMACPP_EXTRA_BODY='{"chat_template_kwargs":{"enable_thinking":false}}' \
 .venv/bin/python web_server.py --config config/local-llamacpp/agent_config.yaml --port 8080
 ```

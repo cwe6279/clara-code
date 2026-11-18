@@ -1113,7 +1113,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--list-models", action="store_true", help="List the models on the Ollama server and exit")
     p.add_argument("--llm-base-url", default=None,
                    help="With --llm openai: a server speaking the OpenAI API instead of OpenAI, e.g. llama.cpp "
-                        "at http://192.168.68.81:8091/v1 (also OPENAI_BASE_URL). The key is then not checked.")
+                        "at http://192.168.1.51:8091/v1 (also OPENAI_BASE_URL). The key is then not checked.")
     p.add_argument("--llm-think", action="store_true",
                    help="Let a thinking model on --llm-base-url reason before answering (default off: it "
                         "spends the reply budget thinking and says nothing for seconds)")
