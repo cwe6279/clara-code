@@ -568,6 +568,14 @@ class SatelliteServer:
             raise web.HTTPForbidden(text="this device is not on the allow-list")
         return gate
 
+    def _note_open(self, board_id: str) -> None:
+        """Once, with no allow-list: say how to let only this board in."""
+        if self.allow or getattr(self, "_open_note", False) or not board_id:
+            return
+        self._open_note = True
+        self.on_event("satellite", "any device on this network may connect. To allow only this board: "
+                                   f"--satellite-allow {board_id}")
+
     async def _ota(self, request):
         from aiohttp import web
         info = {}
@@ -590,10 +598,7 @@ class SatelliteServer:
         ws_url = f"ws://{host}:{self.port}{WS_PATH}"
         self.on_event("satellite", f"device {self.device['mac'] or '?'} v{self.device['version'] or '?'} "
                                    f"checked in; websocket {ws_url}")
-        if not self.allow and not getattr(self, "_open_note", False):
-            self._open_note = True               # once: how to close the door
-            self.on_event("satellite", "any device on this network may connect. To allow only this board: "
-                                       f"--satellite-allow {self.device['client'] or self.device['mac'] or '<its id>'}")
+        self._note_open(self.device["client"] or self.device["mac"])
         now = time.time()
         offset_min = -time.timezone // 60 if not time.daylight else -time.altzone // 60
         if self.firmware_version:
@@ -617,6 +622,11 @@ class SatelliteServer:
 
     async def _websocket(self, request):
         from aiohttp import web
+        # A board that reconnects without rebooting skips the OTA check-in, so take its ids here too.
+        for key, header in (("client", "Client-Id"), ("mac", "Device-Id")):
+            if request.headers.get(header) and not self.device.get(key):
+                self.device[key] = request.headers[header]
+        self._note_open(request.headers.get("Client-Id", "") or request.headers.get("Device-Id", ""))
         ws = web.WebSocketResponse(heartbeat=30, max_msg_size=1 << 20)
         await ws.prepare(request)
         if self._ws is not None and not self._ws.closed:

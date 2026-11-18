@@ -463,3 +463,17 @@ def test_allow_list_keeps_other_devices_out():
     asyncio.run(go())
     assert any("refused a device" in t and "de:ad:be:ef:00:01" in t for _, t in events)
     assert not any("may connect" in t for _, t in events)
+
+
+def test_board_id_is_noted_from_a_reconnect_without_check_in(server):
+    """A board that reconnects without rebooting goes straight to the websocket: its id is still shown."""
+    srv, eng, events, port = server
+
+    async def go():
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect(f"ws://127.0.0.1:{port}{WS_PATH}",
+                                    headers={"Device-Id": "aa:bb", "Client-Id": "uuid-1"}) as ws:
+                await ws.close()
+    asyncio.run(go())
+    assert srv.device.get("client") == "uuid-1"
+    assert sum("--satellite-allow uuid-1" in t for _, t in events) == 1
