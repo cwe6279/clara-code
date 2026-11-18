@@ -14,6 +14,10 @@ It speaks the talker errand protocol (version 2, see talker/errands.py):
     GET  /tasks, GET /health
     GET  /box/apps           the servers running in the box (box-app list), for the control page
     POST /box/apps/{stop|keep|unkeep|restart|forget|stop-port|adopt}  {"name", "port", "keep"}
+    GET  /box/files?path=P   a folder of the box's workspace (~/work), for the control page
+    GET  /box/files/raw?path=P             a file's bytes
+    POST /box/files/upload?path=DIR&name=N&replace=0   the file's bytes (application/octet-stream)
+    POST /box/files/{trash|rename|mkdir|empty-trash}  {"path", "name"}
 
 How a task runs:
   * Claude Code runs headless in the box (~/bin/cc-run: tmux window cc-<id>, auto
@@ -54,16 +58,19 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
 
 BOX_DIR = Path.home() / ".local" / "share" / "clara-box"
 MODELS = ("haiku", "sonnet", "opus")
 INPUT_TTL = 1800.0
 MAX_BODY = 256 * 1024              # a request body larger than this is refused
+MAX_FILE = 25 * 1024 * 1024        # a file read from or uploaded to the box
 MAX_RESULT = 20000                 # characters of a Claude Code answer that are kept
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 APP_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
@@ -163,6 +170,18 @@ class BoxRunner:
                 return
             time.sleep(2)
         raise RuntimeError("the box did not start")
+
+    def box_files(self, request: dict, data: bytes = b"", timeout: float = 60) -> tuple:
+        """box-files in the box: the request goes as one JSON line on stdin (no path reaches a
+        shell), then any upload's bytes. Returns (exit code, output bytes)."""
+        try:
+            p = subprocess.run(self.ssh() + ["box-files"], input=json.dumps(request).encode() + b"\n" + data,
+                               capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return 124, json.dumps({"error": "the box did not answer"}).encode()
+        if p.returncode == 255:
+            return 255, json.dumps({"error": "the box is off or unreachable"}).encode()
+        return p.returncode, p.stdout
 
     def box_app(self, args: list, timeout: float = 30) -> tuple:
         """box-app in the box, for the control page. Returns (exit code, output). Does not start a
@@ -536,6 +555,16 @@ def box_voice(runner, text: str):
     return f"{_spoken_name(e).capitalize()} is back{where}. It's temporary: it stops in a day unless you say keep it."
 
 
+def box_files_json(runner, request: dict) -> tuple:
+    """(http code, body) for a box-files request that answers in JSON."""
+    code, out = runner.box_files(request)
+    try:
+        body = json.loads(out or b"{}")
+    except ValueError:
+        body = {"error": "box-files gave no answer"}
+    return (200 if code == 0 else 400 if code == 1 else 502), body
+
+
 def _untrusted(text: str) -> str:
     """Claude Code's answer may repeat text from a web page. Clara's own tool syntax ({{task …}},
     {{tool …}}) is taken out so such text cannot be passed to her as a command, and the length
@@ -573,8 +602,11 @@ def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
             host = (self.headers.get("Host") or "").rsplit(":", 1)[0] if not (self.headers.get("Host") or "").startswith("[") \
                 else (self.headers.get("Host") or "").split("]")[0] + "]"
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            # an upload is raw bytes; a web page cannot send that type without a preflight we never grant
+            wants = ("application/json", "application/octet-stream") if self.path.startswith("/box/files/upload") \
+                else ("application/json",)
             if host not in allowed_hosts or self.headers.get("Origin") or \
-                    self.headers.get("Sec-Fetch-Site") not in (None, "none") or (post and ctype != "application/json"):
+                    self.headers.get("Sec-Fetch-Site") not in (None, "none") or (post and ctype not in wants):
                 self._json(403, {"error": "local programs only"})
                 return True
             if token and not hmac.compare_digest(self.headers.get("X-Relay-Token") or "", token):
@@ -608,6 +640,23 @@ def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
                 return self._json(200, sorted(relay.tasks.values(), key=lambda t: t["created"]))
             if path == "/box/apps":
                 return self._json(*box_apps(relay.runner))
+            if path in ("/box/files", "/box/files/raw"):
+                q = parse_qs(urlsplit(self.path).query)
+                where = (q.get("path") or [""])[0]
+                if path == "/box/files":
+                    return self._json(*box_files_json(relay.runner, {"op": "list", "path": where}))
+                code, out = relay.runner.box_files({"op": "read", "path": where})
+                if code != 0:
+                    try:
+                        return self._json(400 if code == 1 else 502, json.loads(out or b"{}"))
+                    except ValueError:
+                        return self._json(502, {"error": "box-files gave no answer"})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+                return
             if path.startswith("/tasks/"):
                 tid = path[len("/tasks/"):]
                 t = relay.get(tid)
@@ -625,9 +674,38 @@ def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
             if self._refused(post=True):
                 return
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/box/files/upload":
+                q = parse_qs(urlsplit(self.path).query)
+                try:
+                    n = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    n = -1
+                if n < 0 or n > MAX_FILE:
+                    return self._json(413, {"error": f"uploads are limited to {MAX_FILE // 1024 // 1024} MB"})
+                data = self.rfile.read(n)
+                code, out = relay.runner.box_files({"op": "write", "path": (q.get("path") or [""])[0],
+                                                    "name": (q.get("name") or [""])[0], "size": len(data),
+                                                    "replace": (q.get("replace") or ["0"])[0] == "1"}, data)
+                try:
+                    body = json.loads(out or b"{}")
+                except ValueError:
+                    body = {"error": "box-files gave no answer"}
+                return self._json(200 if code == 0 else 400 if code == 1 else 502, body)
             body = self._body()
             if body is None:
                 return self._json(400, {"error": "bad json"})
+            m = re.fullmatch(r"/box/files/(trash|rename|mkdir|empty-trash|usage)", path)
+            if m:
+                code, out = box_files_json(relay.runner, {"op": m.group(1), "path": str(body.get("path") or ""),
+                                                          "name": str(body.get("name") or "")})
+                if m.group(1) == "usage" and code == 200:         # and what the VM takes on this computer
+                    disk = BOX_DIR / "clara-box.qcow2"
+                    try:
+                        out["host_vm"] = os.stat(disk).st_blocks * 512
+                        out["host_free"] = shutil.disk_usage(BOX_DIR).free
+                    except OSError:
+                        pass
+                return self._json(code, out)
             m = re.fullmatch(r"/box/apps/([a-z-]+)", path)
             if m:
                 return self._json(*box_action(relay.runner, m.group(1), body))

@@ -1,0 +1,162 @@
+#!/usr/bin/python3
+"""box-files: the control page's view of the box's workspace (~/work), one request at a time.
+
+The request is one JSON line on stdin, so no path ever reaches a shell; for "write" the file's
+bytes follow that line. Every path is relative to ~/work and must resolve inside it (a link
+pointing elsewhere is refused). Installed root-owned in /usr/local/bin.
+
+    {"op": "list",   "path": "notes"}                     -> JSON: the folder's entries
+    {"op": "read",   "path": "notes/a.md"}                -> the file's bytes
+    {"op": "write",  "path": "inbox", "name": "x.pdf", "size": N, "replace": false}  + N bytes
+    {"op": "trash",  "path": "old/page.html"}             -> moved to ~/work/.trash/
+    {"op": "rename", "path": "a.txt", "name": "b.txt"}    -> renamed in the same folder
+    {"op": "mkdir",  "path": "notes", "name": "ideas"}
+    {"op": "empty-trash"}
+    {"op": "usage"}                                        -> JSON: the box's disk, ~/work, its trash
+
+Errors: a JSON {"error": ...} on stdout and exit status 1.
+"""
+import json
+import os
+import re
+import shutil
+import stat
+import sys
+import time
+from pathlib import Path
+
+WORK = Path(os.path.realpath(Path.home() / "work"))
+TRASH = WORK / ".trash"
+MAX_BYTES = 25 * 1024 * 1024
+NAME_RE = re.compile(r"[^/\x00]{1,200}")
+
+
+class Refused(Exception):
+    pass
+
+
+def inside(rel: str) -> Path:
+    rel = str(rel or "").strip().lstrip("/")
+    p = Path(os.path.realpath(WORK / rel))
+    if p != WORK and WORK not in p.parents:
+        raise Refused("that path is outside the box's workspace")
+    return p
+
+
+def entry_path(rel: str) -> Path:
+    """The path itself, not where a link points: for trash and rename, which act on the link."""
+    rel = str(rel or "").strip().strip("/")
+    if not rel or any(part in ("", ".", "..") for part in rel.split("/")):
+        raise Refused("not a valid path in the workspace")
+    parent = inside(str(Path(rel).parent))
+    return parent / Path(rel).name
+
+
+def good_name(name: str) -> str:
+    name = str(name or "").strip()
+    if not NAME_RE.fullmatch(name) or name in (".", ".."):
+        raise Refused("a name cannot be empty, '.', '..' or contain '/'")
+    return name
+
+
+def entry(p: Path) -> dict:
+    st = p.lstat()
+    kind = "dir" if stat.S_ISDIR(st.st_mode) else "link" if stat.S_ISLNK(st.st_mode) else "file"
+    return {"name": p.name, "type": kind, "size": st.st_size if kind == "file" else None,
+            "modified": round(st.st_mtime)}
+
+
+def main() -> int:
+    raw = sys.stdin.buffer.readline()
+    try:
+        req = json.loads(raw)
+        op = req.get("op")
+        if op == "list":
+            d = inside(req.get("path", ""))
+            if not d.is_dir():
+                raise Refused("not a folder")
+            items = sorted((entry(c) for c in d.iterdir()), key=lambda e: (e["type"] != "dir", e["name"].lower()))
+            rel = "" if d == WORK else str(d.relative_to(WORK))
+            print(json.dumps({"path": rel, "entries": items}))
+            return 0
+        if op == "read":
+            f = inside(req.get("path", ""))
+            if not f.is_file():
+                raise Refused("not a file")
+            if f.stat().st_size > MAX_BYTES:
+                raise Refused(f"the file is larger than {MAX_BYTES // 1024 // 1024} MB")
+            with open(f, "rb") as fh:
+                shutil.copyfileobj(fh, sys.stdout.buffer)
+            return 0
+        if op == "write":
+            d = inside(req.get("path", ""))
+            if not d.is_dir():
+                raise Refused("not a folder")
+            size = int(req.get("size") or 0)
+            if size < 0 or size > MAX_BYTES:
+                raise Refused(f"uploads are limited to {MAX_BYTES // 1024 // 1024} MB")
+            target = d / good_name(req.get("name"))
+            if target.exists() and not req.get("replace"):
+                raise Refused(f"{target.name} already exists")
+            data = sys.stdin.buffer.read(size)
+            if len(data) != size:
+                raise Refused("the upload was cut short")
+            tmp = target.with_name(f".{target.name}.part")
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, target)
+            print(json.dumps({"ok": True, "message": f"uploaded {target.name} ({size} bytes)"}))
+            return 0
+        if op == "trash":
+            f = entry_path(req.get("path", ""))
+            if f == WORK or f == TRASH:
+                raise Refused("that cannot go to the trash")
+            if not os.path.lexists(f):
+                raise Refused("it is not there")
+            TRASH.mkdir(exist_ok=True)
+            dest = TRASH / f"{time.strftime('%Y%m%d-%H%M%S')}-{f.name}"
+            os.replace(f, dest)
+            print(json.dumps({"ok": True, "message": f"moved {f.name} to .trash"}))
+            return 0
+        if op == "rename":
+            f = entry_path(req.get("path", ""))
+            if f == WORK:
+                raise Refused("the workspace itself cannot be renamed")
+            target = f.parent / good_name(req.get("name"))
+            if os.path.lexists(target):
+                raise Refused(f"{target.name} already exists")
+            os.replace(f, target)
+            print(json.dumps({"ok": True, "message": f"renamed to {target.name}"}))
+            return 0
+        if op == "mkdir":
+            d = inside(req.get("path", ""))
+            (d / good_name(req.get("name"))).mkdir()
+            print(json.dumps({"ok": True, "message": "folder made"}))
+            return 0
+        if op == "usage":
+            def size(p: Path) -> int:
+                total = 0
+                for dirpath, _dirs, files in os.walk(p):
+                    for n in files:
+                        try:
+                            total += os.lstat(os.path.join(dirpath, n)).st_size
+                        except OSError:
+                            pass
+                return total
+            du = shutil.disk_usage(WORK)
+            print(json.dumps({"disk_total": du.total, "disk_free": du.free, "work": size(WORK),
+                              "trash": size(TRASH) if TRASH.is_dir() else 0}))
+            return 0
+        if op == "empty-trash":
+            if TRASH.is_dir():
+                shutil.rmtree(TRASH)
+            print(json.dumps({"ok": True, "message": "trash emptied"}))
+            return 0
+        raise Refused(f"unknown request {op!r}")
+    except (Refused, ValueError, OSError) as e:
+        print(json.dumps({"error": str(e)}))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

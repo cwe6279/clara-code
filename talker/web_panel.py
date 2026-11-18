@@ -31,6 +31,7 @@ panel.action(...), panel.status_fn, panel.calibrator, panel.snapshot, panel.agen
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import socket
@@ -168,6 +169,10 @@ def describe_parser(parser, args) -> List[Dict[str, Any]]:
 
 
 # ── Wi-Fi through NetworkManager (Raspberry Pi OS and most Linux) ───────────────
+TEXT_EXTS = {".txt", ".md", ".json", ".csv", ".tsv", ".log", ".py", ".js", ".ts", ".html", ".htm", ".css",
+             ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".sh", ".sql", ".jsonl", ".svg"}
+
+
 class WifiControl:
     def __init__(self):
         self.available = shutil.which("nmcli") is not None
@@ -234,6 +239,7 @@ class WebPanel:
         self.dreams_dir: Optional[str] = None   # dream.py reports, listed on the Dreams tab
         self.boards = None                # satellite.SatelliteServer when a board is the mic and speaker
         self.box_url = None               # () -> the Claude Code relay's address: the Box tab asks it
+        self.captures_dir: Optional[str] = None   # her photos and scans: the Files tab's "Captures"
         self.wifi = WifiControl()
         self.calib: Dict[str, Any] = {"state": "idle", "prompt": "", "result": None, "error": ""}
         self._calib_go = threading.Event()
@@ -249,6 +255,142 @@ class WebPanel:
 
     def action(self, name: str, fn: Callable[[str], str], help: str, takes_text: bool = False) -> None:
         self.actions[name] = Action(name, fn, help, takes_text)
+
+    # files: her captures here, the box's workspace through the relay -------------------
+    FILE_MAX = 25 * 1024 * 1024
+
+    def _relay_raw(self, method: str, path: str, data: Optional[bytes] = None, ctype: str = "application/json"):
+        """(status, bytes) from the relay, which alone holds the box's key."""
+        import urllib.error
+        import urllib.request
+        url = self.box_url() if self.box_url else ""
+        if not url:
+            return 400, json.dumps({"error": "no Claude Code relay is set (--agent-url), so the box cannot be reached"}).encode()
+        headers = {"Content-Type": ctype} if data is not None else {}
+        tok = os.environ.get("AGENT_RELAY_TOKEN", "").strip()
+        if tok:
+            headers["X-Relay-Token"] = tok
+        req = urllib.request.Request(url.rstrip("/") + path, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except (urllib.error.URLError, OSError) as e:
+            return 502, json.dumps({"error": f"the relay is not reachable: {e}"}).encode()
+
+    def _cap_path(self, rel: str) -> str:
+        base = os.path.realpath(self.captures_dir or "")
+        p = os.path.realpath(os.path.join(base, str(rel or "").lstrip("/")))
+        if not self.captures_dir or (p != base and not p.startswith(base + os.sep)):
+            raise ValueError("that path is outside the captures folder")
+        return p
+
+    def files_list(self, where: str, rel: str) -> Dict[str, Any]:
+        if where == "box":
+            from urllib.parse import quote
+            code, out = self._relay_raw("GET", "/box/files?path=" + quote(rel))
+            try:
+                return json.loads(out or b"{}")
+            except ValueError:
+                return {"error": f"no answer from the box ({code})"}
+        try:
+            d = self._cap_path(rel)
+            os.makedirs(self.captures_dir, exist_ok=True)
+            if not os.path.isdir(d):
+                return {"error": "not a folder"}
+            items = []
+            for n in os.listdir(d):
+                st = os.lstat(os.path.join(d, n))
+                kind = "dir" if os.path.isdir(os.path.join(d, n)) else "file"
+                items.append({"name": n, "type": kind, "size": st.st_size if kind == "file" else None,
+                              "modified": round(st.st_mtime)})
+            items.sort(key=lambda e: (e["type"] != "dir", -e["modified"]))
+            base = os.path.realpath(self.captures_dir)
+            return {"path": os.path.relpath(d, base) if d != base else "", "entries": items}
+        except (ValueError, OSError) as e:
+            return {"error": str(e)}
+
+    def files_read(self, where: str, rel: str):
+        """(bytes, None) or (None, error)."""
+        if where == "box":
+            from urllib.parse import quote
+            code, out = self._relay_raw("GET", "/box/files/raw?path=" + quote(rel))
+            if code == 200:
+                return out, None
+            try:
+                return None, json.loads(out or b"{}").get("error", f"error {code}")
+            except ValueError:
+                return None, f"error {code}"
+        try:
+            p = self._cap_path(rel)
+            if not os.path.isfile(p):
+                return None, "not a file"
+            if os.path.getsize(p) > self.FILE_MAX:
+                return None, "the file is larger than 25 MB"
+            with open(p, "rb") as f:
+                return f.read(), None
+        except (ValueError, OSError) as e:
+            return None, str(e)
+
+    def files_do(self, where: str, op: str, rel: str, name: str = "") -> Dict[str, Any]:
+        if where == "box":
+            code, out = self._relay_raw("POST", f"/box/files/{op}", json.dumps({"path": rel, "name": name}).encode())
+            try:
+                r = json.loads(out or b"{}")
+            except ValueError:
+                r = {"error": f"no answer from the box ({code})"}
+        else:
+            r = self._captures_do(op, rel, name)
+        if "message" in r:
+            self.record("files", f"{where}: {r['message']}")
+        return r
+
+    def _captures_do(self, op: str, rel: str, name: str) -> Dict[str, Any]:
+        import shutil
+        import subprocess
+        try:
+            if op == "empty-trash":
+                return {"error": "her captures go to the desktop's own Trash; empty it there"}
+            if op == "mkdir":
+                d = self._cap_path(rel)
+                if not name or "/" in name or name in (".", ".."):
+                    return {"error": "not a valid folder name"}
+                os.mkdir(os.path.join(d, name))
+                return {"ok": True, "message": f"folder {name} made"}
+            p = self._cap_path(rel)
+            if p == os.path.realpath(self.captures_dir):
+                return {"error": "the captures folder itself cannot be changed"}
+            if op == "rename":
+                if not name or "/" in name or name in (".", ".."):
+                    return {"error": "not a valid name"}
+                target = os.path.join(os.path.dirname(p), name)
+                if os.path.lexists(target):
+                    return {"error": f"{name} already exists"}
+                os.replace(p, target)
+                return {"ok": True, "message": f"renamed to {name}"}
+            if op == "trash":                    # the desktop's Trash, as the file manager does; else .trash
+                if shutil.which("gio") and subprocess.run(["gio", "trash", p], capture_output=True).returncode == 0:
+                    return {"ok": True, "message": f"moved {os.path.basename(p)} to the Trash"}
+                t = os.path.join(os.path.realpath(self.captures_dir), ".trash")
+                os.makedirs(t, exist_ok=True)
+                os.replace(p, os.path.join(t, time.strftime("%Y%m%d-%H%M%S-") + os.path.basename(p)))
+                return {"ok": True, "message": f"moved {os.path.basename(p)} to captures/.trash"}
+            return {"error": f"unknown operation {op}"}
+        except (ValueError, OSError) as e:
+            return {"error": str(e)}
+
+    def files_upload(self, rel: str, name: str, data: bytes, replace: bool) -> Dict[str, Any]:
+        from urllib.parse import quote
+        code, out = self._relay_raw("POST", f"/box/files/upload?path={quote(rel)}&name={quote(name)}"
+                                    f"&replace={'1' if replace else '0'}", data, "application/octet-stream")
+        try:
+            r = json.loads(out or b"{}")
+        except ValueError:
+            r = {"error": f"no answer from the box ({code})"}
+        if "message" in r:
+            self.record("files", f"box: {r['message']}")
+        return r
 
     def _box(self, method: str, path: str, body: Optional[dict] = None):
         """(body, code) for the Box tab: the relay runs box-app in the box."""
@@ -296,6 +438,30 @@ class WebPanel:
             def _json(self, obj: Any, code: int = 200) -> None:
                 self._send(code, json.dumps(obj).encode())
 
+            def _send_file(self, data: bytes, name: str, download: bool) -> None:
+                """A file from the box or her captures, never as a live page: images as images, text
+                (HTML included) as plain text, anything else as a download. The sandbox policy and
+                nosniff stop a file Claude Code wrote from running in this page's origin."""
+                from urllib.parse import quote
+                ext = os.path.splitext(name)[1].lower()
+                images = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+                          ".webp": "image/webp"}
+                if ext in images:
+                    ctype = images[ext]
+                elif ext in TEXT_EXTS or not ext:
+                    ctype = "text/plain; charset=utf-8"
+                else:
+                    ctype, download = "application/octet-stream", True
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
+                self.send_header("Content-Disposition", f"{'attachment' if download else 'inline'}; filename*=UTF-8''{quote(name)}")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+
             def _foreign(self, post: bool) -> bool:
                 """True (and 403 sent) for a request another web page made. The page has no password,
                 so without this any site open in the browser could post here: a form post, a fetch
@@ -307,7 +473,8 @@ class WebPanel:
                 bad = (panel.host in ("127.0.0.1", "localhost", "::1") and name not in ("127.0.0.1", "localhost", "[::1]")) \
                     or (origin and origin != f"http://{host}") \
                     or self.headers.get("Sec-Fetch-Site") == "cross-site" \
-                    or (post and ctype != "application/json")
+                    or (post and ctype not in (("application/json", "application/octet-stream")
+                                              if self.path.startswith("/api/files/upload") else ("application/json",)))
                 if bad:
                     self._json({"error": "requests from other pages are refused"}, 403)
                 return bool(bad)
@@ -346,6 +513,18 @@ class WebPanel:
                         else:
                             with open(path, encoding="utf-8") as f:
                                 self._send(200, f.read().encode(), "text/plain; charset=utf-8")
+                    elif u.path in ("/api/files", "/api/files/raw"):
+                        q = parse_qs(u.query)
+                        where = "box" if (q.get("where") or ["box"])[0] == "box" else "captures"
+                        rel = (q.get("path") or [""])[0]
+                        if u.path == "/api/files":
+                            self._json(panel.files_list(where, rel))
+                        else:
+                            data, err = panel.files_read(where, rel)
+                            if err:
+                                self._json({"error": err}, 404)
+                            else:
+                                self._send_file(data, os.path.basename(rel), (q.get("download") or ["0"])[0] == "1")
                     elif u.path == "/api/box":
                         self._json(*panel._box("GET", "/box/apps"))
                     elif u.path == "/api/boards":
@@ -363,12 +542,27 @@ class WebPanel:
                     return
                 u = urlparse(self.path)
                 n = int(self.headers.get("Content-Length") or 0)
+                raw_body, body = b"", {}
+                if u.path == "/api/files/upload":
+                    raw_body = self.rfile.read(n) if 0 < n <= panel.FILE_MAX else b""
+                else:
+                    try:
+                        body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+                    except ValueError:
+                        body = {}
                 try:
-                    body = json.loads(self.rfile.read(n) or b"{}") if n else {}
-                except ValueError:
-                    body = {}
-                try:
-                    if u.path.startswith("/api/box/"):
+                    if u.path == "/api/files/upload":
+                        q = parse_qs(u.query)
+                        if n > panel.FILE_MAX:
+                            self._json({"error": "uploads are limited to 25 MB"}, 413)
+                        else:
+                            self._json(panel.files_upload((q.get("path") or [""])[0], (q.get("name") or [""])[0],
+                                                          raw_body, (q.get("replace") or ["0"])[0] == "1"))
+                    elif u.path.startswith("/api/files/"):
+                        where = "box" if body.get("where", "box") == "box" else "captures"
+                        self._json(panel.files_do(where, u.path[len("/api/files/"):], str(body.get("path", "")),
+                                                  str(body.get("name", ""))))
+                    elif u.path.startswith("/api/box/"):
                         self._json(*panel._box("POST", "/box/apps/" + u.path[len("/api/box/"):], body))
                     elif u.path in ("/api/boards/allow", "/api/boards/remove"):
                         if not panel.boards:
@@ -558,7 +752,7 @@ h2{font-size:1.05rem;margin:1.2rem 0 .6rem}#toast{position:fixed;bottom:1rem;rig
 img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 </style></head><body>
 <header><h1>Talker control</h1><span class="sub" id="who">connecting…</span><span class="sub" id="up"></span></header>
-<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="box">Box</button><button data-t="dreams">Dreams</button></nav>
+<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="box">Box</button><button data-t="files">Files</button><button data-t="dreams">Dreams</button></nav>
 <main>
 <section id="status" class="on">
   <div class="grid" id="cards"></div>
@@ -601,6 +795,18 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
   <p class="help">Once a day, after a few idle hours, a strong model reviews her logs and writes proposed improvements. Nothing is applied automatically. "dream now" on Test setup runs one at once.</p>
   <div class="row" id="dreamlist"></div>
   <div class="log" id="dreamtext" style="max-height:none">Pick a report.</div>
+</section>
+<section id="files">
+  <p class="help">Her photos and scans on this computer, and everything in Claude Code's box (its workspace, <code>~/work</code>). Files open here as pictures or plain text; pages from the box are shown as their source, never run. Deleting moves things to a trash you can recover from.</p>
+  <div class="row"><button class="act" id="flcap" onclick="flWhere('captures')">Captures</button><button class="act" id="flbox" onclick="flWhere('box')">Box workspace</button>
+    <span style="flex:1"></span><button class="act" onclick="flLoad()">Refresh</button><button class="act" onclick="flMkdir()">New folder</button>
+    <label class="act" id="flupl" style="cursor:pointer">Upload…<input type="file" multiple style="display:none" onchange="flUpload(this)"></label>
+    <button class="act" id="flempty" onclick="flEmpty()">Empty box trash</button></div>
+  <div class="row" id="flcrumbs"></div>
+  <div id="flusage" class="help"></div>
+  <div id="flmsg" class="help"></div>
+  <div class="wrap"><table id="fltable"></table></div>
+  <div id="flprev" style="margin-top:1rem"></div>
 </section>
 <section id="box">
   <p class="help">Servers Claude Code runs in its box, on ports 8100 to 8119 of this machine. Temporary ones stop by themselves after a day; kept ones stay up and come back when the box restarts. Anything on those ports that box-app did not start is stopped within the hour.</p>
@@ -645,7 +851,7 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 <div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='box')box();if(b.dataset.t==='dreams')dreams();});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='box')box();if(b.dataset.t==='files')flLoad();if(b.dataset.t==='dreams')dreams();});
 async function dreams(){const r=await (await fetch('/api/dreams')).json();$('#dreamlist').innerHTML=(r.reports||[]).length?r.reports.map(n=>`<button class="act" onclick="dreamOpen('${esc(n)}')">${esc(n.replace('.md',''))}</button>`).join(''):'<span class="help">No dreams yet.</span>';if((r.reports||[]).length)dreamOpen(r.reports[0])}
 async function dreamOpen(n){const r=await fetch('/api/dreams/'+encodeURIComponent(n));$('#dreamtext').textContent=r.ok?await r.text():'could not load '+n}
 function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;clearTimeout(t._h);t._h=setTimeout(()=>t.style.opacity=0,2200)}
@@ -692,6 +898,38 @@ async function box(){const r=await (await fetch('/api/box')).json();
  const life=a=>a.keep?'<span class="ok">kept</span>':`temporary, ${Math.max(0,a.expires_in_h)} h left`;
  $('#boxapps').innerHTML='<tr><th>name</th><th>address</th><th>state</th><th>lifetime</th><th>folder</th><th></th></tr>'+((r.apps||[]).length?r.apps.map(a=>`<tr><td><b>${esc(a.name)}</b></td><td><a href="http://localhost:${a.port}" target="_blank" rel="noopener">localhost:${a.port}</a></td><td class="${a.running?'ok':'bad'}">${a.running?'running':'not running'}</td><td>${life(a)}</td><td class="help">${esc(a.dir)}</td><td style="white-space:nowrap">${a.keep?`<button class="act" onclick="boxDo('unkeep',{name:'${esc(a.name)}'})">Make temporary</button>`:`<button class="act" onclick="boxDo('keep',{name:'${esc(a.name)}'})">Keep</button>`} <button class="act" onclick="boxStop('${esc(a.name)}')">Stop</button></td></tr>`).join(''):'<tr><td class="help" colspan="6">nothing running</td></tr>');
  $('#boxstrays').innerHTML='<tr><th>address</th><th>command</th><th></th></tr>'+((r.strays||[]).length?r.strays.map(s=>`<tr><td><a href="http://localhost:${s.port}" target="_blank" rel="noopener">localhost:${s.port}</a></td><td class="help"><code>${esc(s.cmd)}</code></td><td style="white-space:nowrap"><button class="act" onclick="boxAdopt(${s.port})">Adopt</button> <button class="act" onclick="boxDo('stop-port',{port:${s.port}})">Stop</button></td></tr>`).join(''):'<tr><td class="help" colspan="3">none</td></tr>');boxLib(r)}
+const FL={where:'box',path:''};
+function flSize(n){return n==null?'':n<1024?n+' B':n<1048576?(n/1024).toFixed(0)+' KB':(n/1048576).toFixed(1)+' MB'}
+function flJoin(a,b){return a?a+'/'+b:b}
+function flRaw(p,dl){return `/api/files/raw?where=${FL.where}&path=${encodeURIComponent(p)}${dl?'&download=1':''}&t=${Date.now()}`}
+function flWhere(w){FL.where=w;FL.path='';$('#flprev').innerHTML='';flLoad()}
+async function flLoad(){$('#flcap').className='act'+(FL.where==='captures'?' primary':'');$('#flbox').className='act'+(FL.where==='box'?' primary':'');
+ $('#flupl').style.display=$('#flempty').style.display=FL.where==='box'?'':'none';$('#flmsg').textContent='loading…';
+ const r=await (await fetch(`/api/files?where=${FL.where}&path=${encodeURIComponent(FL.path)}`)).json();
+ if(r.error){$('#flmsg').textContent=r.error;$('#fltable').innerHTML='';return}
+ $('#flmsg').textContent=r.entries.length?'':'empty';FL.path=r.path||'';flUsage();
+ const parts=FL.path?FL.path.split('/'):[];let acc='';
+ $('#flcrumbs').innerHTML=`<a href="#" onclick="FL.path='';flLoad();return false">${FL.where==='box'?'~/work':'captures'}</a>`+parts.map(p=>{acc=flJoin(acc,p);const a=acc;return ` / <a href="#" onclick="FL.path='${esc(a)}';flLoad();return false">${esc(p)}</a>`}).join('');
+ $('#fltable').innerHTML='<tr><th>name</th><th>size</th><th>modified</th><th></th></tr>'+r.entries.map(e=>{const p=flJoin(FL.path,e.name);const ep=esc(p).replace(/'/g,"\\'");
+  const open=e.type==='dir'?`<a href="#" onclick="FL.path='${ep}';$('#flprev').innerHTML='';flLoad();return false">📁 ${esc(e.name)}</a>`:`<a href="#" onclick="flShow('${ep}');return false">${esc(e.name)}</a>`;
+  return `<tr><td>${open}${e.type==='link'?' <span class="help">(link)</span>':''}</td><td>${flSize(e.size)}</td><td class="help">${new Date(e.modified*1000).toLocaleString()}</td><td style="white-space:nowrap">${e.type==='file'?`<a class="act" href="${flRaw(p,true)}">Download</a> `:''}<button class="act" onclick="flRename('${ep}','${esc(e.name).replace(/'/g,"\\'")}')">Rename</button> <button class="act" onclick="flTrash('${ep}')">Delete</button></td></tr>`}).join('')}
+async function flUsage(){if(FL.where!=='box'){$('#flusage').textContent='';return}
+ const u=await post('/api/files/usage',{where:'box'});if(u.error){$('#flusage').textContent='';return}
+ const g=n=>(n/1073741824).toFixed(1)+' GB';const used=u.disk_total-u.disk_free;const pct=Math.round(100*used/u.disk_total);
+ $('#flusage').innerHTML=`Box disk: <b class="${pct>85?'bad':pct>70?'warn':''}">${g(used)} of ${g(u.disk_total)} used (${pct}%)</b> · workspace ${flSize(u.work)} · box trash ${flSize(u.trash)}`+(u.host_vm!=null?` · on this computer the VM takes ${g(u.host_vm)}, ${g(u.host_free)} free`:'')}
+async function flShow(p){const b=$('#flprev');const ext=(p.split('.').pop()||'').toLowerCase();
+ if(['png','jpg','jpeg','gif','webp'].includes(ext)){b.innerHTML=`<h2>${esc(p)}</h2><img class="snap" src="${flRaw(p)}">`;return}
+ const r=await fetch(flRaw(p));if(!r.ok){b.innerHTML='<span class="help">'+esc((await r.json()).error||'could not open it')+'</span>';return}
+ const ct=r.headers.get('Content-Type')||'';if(!ct.startsWith('text/')){b.innerHTML=`<h2>${esc(p)}</h2><span class="help">No preview for this kind of file. </span><a class="act" href="${flRaw(p,true)}">Download</a>`;return}
+ let t=await r.text();const cut=t.length>300000;if(cut)t=t.slice(0,300000);b.innerHTML=`<h2>${esc(p)}</h2>`;const pre=document.createElement('div');pre.className='log';pre.style.maxHeight='40rem';pre.textContent=t+(cut?'\n… (cut; download for the rest)':'');b.appendChild(pre)}
+async function flTrash(p){if(!confirm('Delete '+p+'? It goes to '+(FL.where==='box'?'the box trash (~/work/.trash)':'the desktop Trash')+'.'))return;const r=await post('/api/files/trash',{where:FL.where,path:p});toast(r.error||r.message);$('#flprev').innerHTML='';flLoad()}
+async function flRename(p,old){const n=prompt('New name for '+old+':',old);if(!n||n===old)return;const r=await post('/api/files/rename',{where:FL.where,path:p,name:n});toast(r.error||r.message);flLoad()}
+async function flMkdir(){const n=prompt('Name of the new folder:');if(!n)return;const r=await post('/api/files/mkdir',{where:FL.where,path:FL.path,name:n});toast(r.error||r.message);flLoad()}
+async function flEmpty(){if(!confirm('Empty the box trash? Those files are deleted for good.'))return;const r=await post('/api/files/empty-trash',{where:'box'});toast(r.error||r.message);flLoad()}
+async function flUpload(inp){for(const f of inp.files){$('#flmsg').textContent='uploading '+f.name+'…';
+ let r=await (await fetch(`/api/files/upload?path=${encodeURIComponent(FL.path)}&name=${encodeURIComponent(f.name)}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f})).json();
+ if(r.error&&/already exists/.test(r.error)&&confirm(f.name+' is already there. Replace it?'))r=await (await fetch(`/api/files/upload?path=${encodeURIComponent(FL.path)}&name=${encodeURIComponent(f.name)}&replace=1`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f})).json();
+ toast(r.error||r.message)}inp.value='';flLoad()}
 function boxLib(r){const day=t=>t?new Date(t*1000).toLocaleDateString():'';
  $('#boxlib').innerHTML='<tr><th>name</th><th>what it is</th><th>last run</th><th>runs</th><th>folder</th><th></th></tr>'+((r.library||[]).length?r.library.map(e=>`<tr><td><b>${esc(e.name)}</b></td><td>${esc(e.about||'')}</td><td>${day(e.last_started)}${e.running?' <span class="ok">running</span>':(e.why?'<div class="help">'+esc(e.why)+'</div>':'')}</td><td>${e.starts}</td><td class="help">${esc(e.dir)}${e.dir_exists?'':' <span class="bad">(gone)</span>'}</td><td style="white-space:nowrap">${e.running?'':`${e.dir_exists?`<button class="act" onclick="boxDo('restart',{name:'${esc(e.name)}'})">Start again</button> `:''}<button class="act" onclick="boxForget('${esc(e.name)}')">Forget</button>`}</td></tr>`).join(''):'<tr><td class="help" colspan="6">empty</td></tr>')}
 async function boxForget(n){if(confirm('Remove '+n+' from the library? Its files in the box are not deleted.'))boxDo('forget',{name:n})}

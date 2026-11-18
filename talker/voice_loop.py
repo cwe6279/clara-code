@@ -1962,6 +1962,8 @@ def main(argv=None) -> int:
             panel.boards = satellite
         if panel is not None and runner is not None:
             panel.box_url = lambda: runner.url
+        if panel is not None:                     # the Files tab: her photos and scans
+            panel.captures_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "captures")
         if panel is not None and satellite is not None and getattr(loop, "vision", None) is not None \
                 and hasattr(loop.vision, "snapshot"):
             _board_camera_panel(panel, satellite, loop.vision)
