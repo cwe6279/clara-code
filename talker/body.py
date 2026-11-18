@@ -4,7 +4,7 @@ body.py — the character's body: movements asked for with {{move <name>}}.
 Only a desktop stand-in for now. It knows the face's list of moves (face.json
 "body": {"moves": [...]}) and logs each one; a real driver (servos on a PCA9685
 over I2C on the Pi, or a serial link to an Arduino) implements the same
-move(name, params) and is chosen here. See ROADMAP.md, Body.
+move(name, params) and is chosen here.
 """
 
 from __future__ import annotations

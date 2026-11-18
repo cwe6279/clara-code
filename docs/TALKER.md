@@ -70,7 +70,7 @@ docs/
 tests/                   <- pytest, no mic or display needed
 voice_loop.py            <- launcher: python voice_loop.py ...
 speak.py                 <- launcher: python speak.py --text "..." (was talker.py)
-ROADMAP.md  requirements.txt  .env.example
+requirements.txt  .env.example
 ```
 
 ## Hardware
