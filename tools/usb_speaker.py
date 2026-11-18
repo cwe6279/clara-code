@@ -17,7 +17,11 @@ import sys
 
 import serial
 
-STATUS = re.compile(rb"Got IP|State: |photo \d+x|E \(|camera|exposure")
+# Only the board's own log lines ("I (123) Tag: ..."), and of those only short status ones: the
+# console also carries her replies and photo descriptions (JSON, free text), which never pass.
+LOG_LINE = re.compile(rb"^[IW] \(\d+\) [A-Za-z0-9_]+: ")
+STATUS = re.compile(rb"Got IP|State: |photo \d+x\d+: kept|exposure: target|camera: ")
+ERROR = re.compile(rb"^E \(\d+\) ")
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 everything = "--all" in sys.argv
 port = args[0] if args else "/dev/ttyACM0"
@@ -25,7 +29,8 @@ port = args[0] if args else "/dev/ttyACM0"
 
 def show(lines: bytes) -> None:
     for line in lines.splitlines(keepends=True):
-        if everything or STATUS.search(line):
+        text = line.rstrip(b"\r\n")
+        if everything or ERROR.match(text) or (LOG_LINE.match(text) and STATUS.search(text) and len(text) < 220):
             sys.stdout.write(line.decode(errors="replace"))
     sys.stdout.flush()
 

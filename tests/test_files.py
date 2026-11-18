@@ -117,3 +117,18 @@ def test_logs_are_browsable_and_this_sessions_log_is_left_alone(tmp_path, monkey
         assert _call(panel.port, "GET", "/api/files/raw?where=logs&path=../logs/../../x")[0] == 404
     finally:
         panel.stop()
+
+
+def test_the_speaker_player_never_logs_what_she_says_or_sees(capsys):
+    src = (ROOT / "tools" / "usb_speaker.py").read_text()
+    ns = {}
+    exec(compile(src.split("def main")[0], "usb_speaker", "exec"), ns)
+    ns["show"](b'I (1123) XiaoEsp32S3Sense: photo 2048x1536: kept 103243 bytes of 1 / 2 / 3\n'
+               b'{"success": true, "text": "PEOPLE: one person, camera on the desk"}\n'
+               b'I (5) Application: << the camera saw someone\n'
+               b'W (8) Display:      a person by the camera\n'
+               b'I (6) StateMachine: State: listening -> speaking\n'
+               b'E (7) Camera: capture failed\n')
+    out = capsys.readouterr().out
+    assert "PEOPLE" not in out and "saw someone" not in out and "a person" not in out
+    assert "State: listening" in out and "photo 2048x1536" in out and "capture failed" in out
