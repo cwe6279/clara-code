@@ -175,7 +175,7 @@ def test_web_pages_and_strangers_are_refused(tmp_path):
     try:
         assert call("POST", "/tasks", {**ok, "Content-Type": "text/plain"}, body) == 403      # a form post
         assert call("POST", "/tasks", {**ok, "Origin": "http://localhost:8100"}, body) == 403   # a page's fetch
-        assert call("GET", "/tasks", {**ok, "Host": "evil.example:8032"}) == 403                # DNS rebinding
+        assert call("GET", "/tasks", {"Host": "evil.example:8032"}) == 401    # DNS rebinding: a page has no token
         assert call("GET", "/tasks", {**ok, "Sec-Fetch-Site": "cross-site"}) == 403
         assert call("POST", "/tasks", {"Content-Type": "application/json"}, body) == 401        # no token
         assert call("POST", "/tasks", {**ok, "Content-Length": str(R.MAX_BODY + 1)}, None) == 400
@@ -292,3 +292,23 @@ def test_the_planners_long_rewording_still_takes_the_shortcut(tmp_path):
     assert "2 pages are running" in s
     _say(relay, "Stop the 3D scatter plot server running in the box on port 8101 using box-app, and confirm it stopped.")
     assert runner.box_calls[-1] == ["stop", "scatter3d"] and not runner.calls
+
+
+def test_a_networked_relay_takes_any_host_with_the_token_only(tmp_path):
+    import http.client
+    from http.server import ThreadingHTTPServer
+    relay, _ = _relay(tmp_path, [])
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), R.make_handler(relay, token="s3cret", extra_host="0.0.0.0"))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def call(headers):
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_port, timeout=5)
+        c.request("GET", "/health", headers=headers)
+        r = c.getresponse(); r.read(); c.close()
+        return r.status
+    try:
+        assert call({"Host": "desktop.local:8032", "X-Relay-Token": "s3cret"}) == 200     # the Pi
+        assert call({"Host": "desktop.local:8032"}) == 401
+        assert call({"Host": "desktop.local:8032", "X-Relay-Token": "s3cret", "Origin": "http://x"}) == 403
+    finally:
+        srv.shutdown()

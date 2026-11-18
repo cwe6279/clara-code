@@ -160,6 +160,8 @@ the settings shown for them will not fit most setups. What it needs:
   folder lists them). Only Clara's on-screen face is tied to one board.
 - **A Linux host** that stays on, with CPU virtualization turned on for the box. The VM's size
   (4 CPUs, 4 GB) is two lines in `box/clara-box.xml`.
+- **Optionally a small voice host** by the board, such as a Raspberry Pi Zero 2 W, with Claude
+  Code's jobs going to the box on the bigger computer: [docs/RPI_ZERO_2W.md](docs/RPI_ZERO_2W.md).
 
 Developed on Fedora. On Windows, run the host side inside WSL2. That has not been tested here;
 expect to need systemd turned on in WSL (`/etc/wsl.conf`), nested virtualization so KVM works

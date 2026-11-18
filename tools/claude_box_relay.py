@@ -44,9 +44,11 @@ Settings (environment):
     CLARA_BOX_KEY / CLARA_BOX_KNOWN_HOSTS / CLARA_BOX_PORT (defaults under ~/.local/share/clara-box)
     AGENT_RELAY_TOKEN  optional shared secret; the voice host sends it as X-Relay-Token
 
-Who may call it: only programs on this machine. Requests that come from a web page (an Origin
-header, a form content type, or a Host that is not this machine's loopback name) are refused,
-so a page open in your browser cannot start a job or read the task list.
+Who may call it: only programs, never a web page (an Origin header or a form content type is
+refused, so a page open in a browser cannot start a job or read the task list). Without a token
+it listens on this machine only and answers only its loopback names. With AGENT_RELAY_TOKEN set
+it may listen on the network (RELAY_HOST=0.0.0.0) for a voice host on another computer, such as
+a Pi, and every request must carry the token (X-Relay-Token).
 """
 
 from __future__ import annotations
@@ -606,7 +608,9 @@ def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
             # an upload is raw bytes; a web page cannot send that type without a preflight we never grant
             wants = ("application/json", "application/octet-stream") if self.path.startswith("/box/files/upload") \
                 else ("application/json",)
-            if host not in allowed_hosts or self.headers.get("Origin") or \
+            # With a token (a relay other computers reach, such as a Pi voice host), the token is
+            # what lets a caller in and any Host is fine; without one, only this computer's names.
+            if (host not in allowed_hosts and not token) or self.headers.get("Origin") or \
                     self.headers.get("Sec-Fetch-Site") not in (None, "none") or (post and ctype not in wants):
                 self._json(403, {"error": "local programs only"})
                 return True

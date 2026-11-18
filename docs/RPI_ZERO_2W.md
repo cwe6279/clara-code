@@ -1,4 +1,10 @@
-# Talker on a Raspberry Pi Zero 2 W
+# Clara's voice host on a Raspberry Pi Zero 2 W
+
+**Status (2026-11-18): retired for now.** The desktop that runs the box is Clara's host, and the
+Pi is switched off. This page stays as the guide for a small, always-on voice host: the Pi sits
+by the board and handles the conversation, and Claude Code's jobs go to the box on a bigger
+computer ([Satellite host](#satellite-host)). The Pi Zero cannot run Claude Code or the box itself;
+[a Pi 5](#everything-on-a-pi-5-untested) might.
 
 The engine guide ([TALKER.md](TALKER.md)) targets a Pi 5 (4 GB+). This page covers the Pi Zero 2 W:
 512 MB of RAM, four slow Cortex-A53 cores, one micro-USB data port, and Wi-Fi
@@ -227,24 +233,65 @@ TALKER_FPS=20 python voice_loop.py --profile pi --face eve --tts elevenlabs --tt
 
 ## Satellite host
 
-The Zero 2 W is the intended permanent host for the ESP32-S3 satellite board
-(`docs/SATELLITE_ESP32.md`): the board does the wake word, mic, speaker and face,
-and the Pi runs the loop headless. On top of the install above:
+The Pi runs Clara's voice host headless for the board (`docs/SATELLITE_ESP32.md`): the board
+does the wake word, mic, speaker and face; the Pi does hearing, conversation and voice, all in
+the cloud. Claude Code is not on the Pi. Her jobs go over the network to the relay and the box
+on a bigger computer (here "the desktop"):
+
+```
+board ──Wi-Fi──> Pi: voice_loop.py ──jobs (token)──> desktop: claude_box_relay.py ──ssh──> box: Claude Code
+```
+
+**On the desktop** (the one with the box, set up as in the README): let the relay listen on the
+network, which it only does with a shared token. In its `.env`:
+
+```
+RELAY_HOST=0.0.0.0
+AGENT_RELAY_TOKEN=<a long random string: python3 -c "import secrets; print(secrets.token_urlsafe(32))">
+```
+
+`systemctl --user restart clara-relay`, then allow port 8032 from the Pi's address only in the
+desktop's firewall. Every request without the token is refused, and web pages never get in.
+
+**On the Pi**, on top of the install above:
 
 ```bash
 sudo apt install -y libopus0
 . ~/clara-code/.venv/bin/activate && pip install opuslib
-python voice_loop.py --face clara --satellite --satellite-lookahead 0.9 --no-window \
-    --stt elevenlabs --tts elevenlabs --tts-model flash --web-host 0.0.0.0
 ```
 
-Not `--profile pi` here: it turns on talker's own wake mode and a fullscreen window, and
-the board already waits for its name. No mic or speaker is needed on the Pi, and the frame
-rate notes above do not apply. The board finds the Pi through its `CONFIG_OTA_URL`
-(`http://<pi-ip>:8030/xiaozhi/ota/`), so give the Pi a DHCP reservation.
+Its `.env`, besides the keys:
 
-Running since 2026-11-14 (a user service: `clara.service` runs `~/.local/bin/clara-run`). What
-the first evening taught:
+```
+AGENT_RELAY_URL=http://<desktop address>:8032
+AGENT_RELAY_TOKEN=<the same string>
+```
+
+Then install only the voice host as a service, and give it the Pi's options:
+
+```bash
+services/install.sh --host-only
+cat > ~/.config/clara-code/host.env <<'ENV'
+CLARA_ARGS=--face clara --satellite --satellite-lookahead 0.9 --no-window --stt elevenlabs --tts elevenlabs --tts-model flash
+ENV
+systemctl --user start clara-host
+```
+
+Not `--profile pi` here: it turns on talker's own wake mode and a fullscreen window, and the
+board already waits for its name. No mic or speaker is needed on the Pi, and the frame rate notes
+above do not apply. The board finds the Pi through its `CONFIG_OTA_URL`
+(`http://<pi address>:8030/xiaozhi/ota/`), so give the Pi a DHCP reservation.
+
+**The control page** stays on the Pi itself (`localhost:8020`). From the desktop, reach it
+through SSH rather than opening it to the network: `ssh -L 8020:localhost:8020 <pi>`, then
+http://localhost:8020. (With `--web-host 0.0.0.0` instead, Settings turns read-only.) Its Box
+Manager works from the Pi too: it goes through the relay with the token.
+
+**Retiring a Pi host:** `systemctl --user disable --now clara-host` on the Pi, and point the board's
+OTA address back at the desktop. A Pi set up before clara-code (a `clara.service` running
+`~/.local/bin/clara-run`) should be disabled the same way: `systemctl --user disable --now clara`.
+
+What running it as the host from 2026-11-14 taught:
 
 - **Gaps mid-sentence had two causes, found in this order.** First the host stalling: a stall
   longer than the lead empties the board's buffer, so the lead is 0.9 s here
@@ -265,6 +312,20 @@ the first evening taught:
   at startup and when asked (see, look, read ...), not at every wake, because the wake look's
   capture, encode and vision call added 2 to 6 s to a conversation's first turn on top of
   the 2.2 to 2.7 s the brain takes to its first word.
+
+## Everything on a Pi 5 (untested)
+
+A Pi 5 with 8 GB might run the whole thing: voice host, relay and box. Not tried yet:
+
+- **The box:** the Pi 5 supports KVM on its ARM cores, so libvirt can run an arm64 guest. Use
+  Debian's `debian-13-genericcloud-arm64.qcow2`, an `aarch64` domain in `box/clara-box.xml`
+  (`<type arch='aarch64' machine='virt'>` and UEFI firmware), and about 2 CPUs and 2-3 GB.
+- **Claude Code** runs on arm64 Linux. **Playwright's Chromium** on arm64 is the least certain part.
+- **Memory:** 8 GB is the floor. The voice host with local Whisper and the box together are tight;
+  cloud speech-to-text leaves room.
+
+If you try it, note what worked and what did not, and add it here.
+
 ## Known issues
 
 - **`tests/test_edge_live.py` fails:** it asserts that the first audio arrives within 2 s. On the Zero, the first edge-tts line takes 2.7–8 s while ffmpeg starts up.

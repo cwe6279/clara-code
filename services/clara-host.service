@@ -1,7 +1,6 @@
 [Unit]
 Description=Clara: the voice host (her board, speech, conversation)
 After=network-online.target clara-relay.service
-Wants=clara-relay.service
 
 [Service]
 WorkingDirectory=@REPO@
