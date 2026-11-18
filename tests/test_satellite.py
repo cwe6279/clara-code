@@ -503,3 +503,14 @@ def test_camera_exposure_goes_to_the_board_and_a_snapshot_is_not_described(monke
         srv.take_photo = board_takes_photo
         assert eyes.snapshot(timeout=3) == b"\xff\xd8jpeg" and not described
         assert eyes.look_now(question="what is it?") == "a room" and described == ["what is it?"]
+
+
+def test_restart_board_sends_its_reboot_tool_and_explains_when_it_cannot(monkeypatch):
+    sent = []
+    srv = SatelliteServer(host="127.0.0.1", port=0, on_event=lambda k, t: None)
+    srv.send_json = sent.append
+    assert "unplug it" in srv.reboot_board()["error"] and not sent        # no Wi-Fi channel: say what to do
+    monkeypatch.setattr(SatelliteServer, "connected", property(lambda self: True))
+    r = srv.reboot_board()
+    assert r["message"] and sent[-1]["payload"]["params"]["name"] == "self.reboot"
+    assert "connected_at" in srv.boards()

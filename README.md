@@ -138,6 +138,9 @@ Check that KVM is usable: `ls -l /dev/kvm` should exist and be readable by you, 
   straight away without a Claude Code run, so they cost nothing. Anything less clear-cut goes to
   Claude Code as a normal job.
 - **Watch it work:** `clara-box` opens the VM's tmux session; each job is a window.
+- **If she stops answering, or you hear nothing:** **Restart board** on the control page's
+  **Boards** tab; if the board is not connected, unplug it and plug it back in. More in
+  [docs/SATELLITE_ESP32.md](docs/SATELLITE_ESP32.md#when-the-board-stops-responding).
 - **Look at files without a terminal:** the control page's **Files** tab browses her photos and
   scans, her session logs, and everything in the box's workspace. Preview, download, rename,
   delete (to a trash you can recover from), upload into the box, and see how full its disk is.

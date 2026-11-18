@@ -293,6 +293,24 @@ or a pick-up wakes her. With the host's 30 s that is 40 s from her last word to 
 host, a lone word that is not something people say alone ("Rome.", "stuff") is dropped as
 noise before it can become a turn (`lone_word_gate`); "Sorry." and "No." still count.
 
+## When the board stops responding
+
+Try these in order:
+
+1. **Restart board** on the control page's **Boards** tab. It works whenever the board is
+   connected over Wi-Fi: the board reboots and checks in again by itself, and the tab says when it
+   is back. Use it when she hears you but you hear nothing, or she stops answering. On 2026-11-18
+   the XIAO's USB link stopped mid-session (no speech and no log over the cable, while her Wi-Fi
+   side kept working); a restart re-establishes it.
+2. **Unplug the board and plug it back in.** This always works, including when the board is not
+   on Wi-Fi at all.
+3. **Press its reset button.** On the XIAO ESP32S3 it is the tiny button marked **R** beside the
+   USB-C socket; the other one, **B** (BOOT), is only for flashing, so do not hold it. Other boards
+   have their own reset button: look for RST or EN.
+
+After any of these the board needs about half a minute: it rejoins Wi-Fi, checks in with the host
+(its first try can time out while Wi-Fi settles; it retries by itself) and is ready.
+
 ## What is next
 
 - The pupil does not dilate and the eyes do not react to emotion beyond a small shift.

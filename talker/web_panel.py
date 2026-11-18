@@ -617,6 +617,10 @@ class WebPanel:
                                                   str(body.get("name", ""))))
                     elif u.path.startswith("/api/box/"):
                         self._json(*panel._box("POST", "/box/apps/" + u.path[len("/api/box/"):], body))
+                    elif u.path == "/api/boards/reboot":
+                        self._json(panel.boards.reboot_board() if panel.boards else {"error": "no board in use (--satellite)"})
+                        if panel.boards:
+                            panel.record("boards", "Restart board pressed")
                     elif u.path in ("/api/boards/allow", "/api/boards/remove"):
                         if not panel.boards:
                             self._json({"error": "no board in use (--satellite)"})
@@ -916,6 +920,8 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
   <div id="bdon">
     <div class="grid"><div class="card"><h3>Access</h3><div class="big" id="bdstate">–</div><div class="help" id="bdcur"></div></div></div>
     <div class="row" id="bdlock"></div>
+    <div class="row"><button class="act" id="bdreboot" onclick="bdReboot()">Restart board</button><span class="help">If she hears you but you do not hear her, or she stops answering. Works over Wi-Fi; if the board is not connected, unplug it and plug it back in, or press its reset button.</span></div>
+    <div id="bdstatus" class="card" style="display:none;margin:.4rem 0"></div>
     <h2>Allowed</h2><div class="wrap"><table id="bdallowed"></table></div>
     <h2>Refused <span class="help">(asked to connect and were turned away)</span></h2><div class="wrap"><table id="bdrefused"></table></div>
   </div>
@@ -1077,9 +1083,21 @@ async function boards(){const r=await (await fetch('/api/boards')).json();
  $('#bdon').style.display='block';$('#bdoff').style.display='none';const c=r.current||{};
  $('#bdstate').textContent=r.open?'open to any device':'allow-list on';$('#bdstate').className='big '+(r.open?'warn':'ok');
  $('#bdcur').textContent=c.id?`board in use${c.board?': '+c.board:''}${c.ip?' at '+c.ip:''}, ${c.connected?'connected':'not connected now'}`:'no board has connected since the start';
+ $('#bdreboot').disabled=!(c.connected);
  $('#bdlock').innerHTML=r.open&&c.id?`<button class="act primary" onclick="bdAllow('${esc(c.id)}')">Allow only this board</button><span class="help">every other device is refused from then on</span>`:'';
  $('#bdallowed').innerHTML='<tr><th>board id</th><th></th><th></th></tr>'+(r.allowed.length?r.allowed.map(a=>`<tr><td><code>${esc(a.id)}</code></td><td class="help">${a.current?'the board in use':''}</td><td>${a.locked?'<span class="help">set in .env</span>':`<button class="act" onclick="bdRemove('${esc(a.id)}')">Remove</button>`}</td></tr>`).join(''):'<tr><td class="help" colspan="3">none: any device may connect</td></tr>');
  $('#bdrefused').innerHTML='<tr><th>board id</th><th>address</th><th>last tried</th><th>tries</th><th></th></tr>'+(r.refused.length?r.refused.map(d=>`<tr><td><code>${esc(d.id)}</code>${d.mac&&d.client?'<div class="help">MAC '+esc(d.mac)+'</div>':''}</td><td>${esc(d.ip)}</td><td>${new Date(d.seen*1000).toLocaleTimeString()}</td><td>${d.count}</td><td><button class="act primary" onclick="bdAllow('${esc(d.id)}')">Allow</button></td></tr>`).join(''):'<tr><td class="help" colspan="5">none</td></tr>')}
+let BD_BOOT=false;
+async function bdReboot(){if(BD_BOOT)return;if(!confirm('Restart the board? It is away for about half a minute.'))return;
+ const st=$('#bdstatus');const show=(cls,h)=>{st.style.display='block';st.innerHTML=`<span class="${cls}">${h}</span>`};
+ const r=await post('/api/boards/reboot',{});if(r.error){show('bad','<b>Not restarted.</b> '+esc(r.error));return}
+ BD_BOOT=true;const asked=r.asked,t0=Date.now();show('warn','<b>Restarting the board…</b>');
+ const tick=async()=>{let d=null;try{d=await (await fetch('/api/boards',{cache:'no-store'})).json()}catch(e){}
+  const secs=Math.round((Date.now()-t0)/1000);
+  if(d&&d.current&&d.current.connected&&d.connected_at>asked){BD_BOOT=false;show('ok','<b>The board is back</b> ('+secs+' s). If you still do not hear her, unplug it and plug it back in.');boards();return}
+  if(secs>120){BD_BOOT=false;show('bad','<b>The board has not come back in two minutes.</b> Unplug it and plug it back in, or press its reset button. It rejoins Wi-Fi and checks in by itself.');return}
+  show('warn','<b>Restarting the board…</b> '+(secs<8?'it is rebooting':'waiting for it to rejoin Wi-Fi and check in')+' ('+secs+' s)');setTimeout(tick,1500)};
+ setTimeout(tick,2000)}
 async function bdAllow(id){if(!confirm('Let board '+id+' connect from now on? Only do this for a board you own.'))return;const r=await post('/api/boards/allow',{id});toast(r.error||'allowed');boards()}
 async function bdRemove(id){const r=await post('/api/boards/remove',{id});toast(r.error||'removed');boards()}
 setInterval(()=>{if($('#boards').classList.contains('on'))boards()},3000);

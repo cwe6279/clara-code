@@ -459,6 +459,7 @@ class SatelliteServer:
         # night 0/1. None: leave the board's own defaults. Sent on connect and when changed.
         self.camera_exposure: Optional[Dict[str, int]] = None
         self.camera_exposure_reply: Dict[str, object] = {}
+        self.connected_at = 0.0                  # when the board's channel last opened
         self.advertise_host = advertise_host     # None: whatever address the device reached us on
         self.token = token
         # A firmware image (build/xiaozhi.bin) to offer over the air: the device upgrades
@@ -503,6 +504,19 @@ class SatelliteServer:
 
     def send_stt(self, text: str) -> None:
         self.send_json({"type": "stt", "text": text})
+
+    def reboot_board(self) -> Dict[str, object]:
+        """Restart the board through its own self.reboot tool, over Wi-Fi: it also brings back a USB
+        link that has stopped (its speaker cable, for a board without one). The board reboots about
+        a second after answering and checks in again by itself."""
+        if not self.connected:
+            return {"error": "the board is not connected over Wi-Fi, so it cannot be told to restart: "
+                             "unplug it and plug it back in, or press its reset button"}
+        asked = time.time()
+        self.send_json({"type": "mcp", "session_id": self.session_id, "payload": {
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "self.reboot", "arguments": {}}}})
+        self.on_event("satellite", "asked the board to restart (Boards tab)")
+        return {"message": "the board is restarting", "asked": asked}
 
     def set_camera_exposure(self, **changes) -> None:
         """Change the board camera's exposure (from any thread); kept for the next connect."""
@@ -603,6 +617,7 @@ class SatelliteServer:
                              "current": a in {str(dev.get("client", "")).lower(), str(dev.get("mac", "")).lower()}}
                             for a in sorted(self.allow)],
                 "refused": [dict(v, id=k) for k, v in sorted(self.refused.items(), key=lambda kv: -float(kv[1]["seen"]))],
+                "connected_at": self.connected_at,
                 "current": {"id": str(dev.get("client") or dev.get("mac") or ""), "board": dev.get("board", ""),
                             "ip": dev.get("ip", ""), "connected": self.connected}}
 
@@ -703,6 +718,7 @@ class SatelliteServer:
         self._ws = ws
         self._ws_host = with_port(request.host, self.port)
         self.session_id = uuid.uuid4().hex[:8]
+        self.connected_at = time.time()           # the Boards tab's Restart board waits for a newer one
         eng = self.engine
         try:
             async for msg in ws:
