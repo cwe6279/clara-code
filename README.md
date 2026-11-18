@@ -32,35 +32,87 @@ the box). That is Claude Code's feature, not something this project adds, and it
 tested here. The box's firewall blocks your local network, so a model server on your LAN
 would also need a rule for it.
 
+## Requirements
+
+**Accounts**
+
+- **An Anthropic API key for Clara**, for her conversation model. It goes in `.env`.
+- **A second Anthropic API key for the box**, in its own Console workspace with a monthly spend
+  limit. Claude Code in the box uses only this one (see Setup, step 3).
+- Optional: an ElevenLabs key for a cloud voice. Without one, use the local Piper voice
+  (`--tts piper`), as in the run command below.
+
+**Host:** a Linux machine that stays on (developed on Fedora; see [Hardware](#hardware) for WSL2).
+
+- Python 3.10 or newer (developed on 3.15).
+- For the voice host: `ffmpeg`, the PortAudio headers and `libopus`.
+- For the box: KVM (CPU virtualization turned on in the BIOS), libvirt with the QEMU driver,
+  `passt` (the VM's user-mode network), `qemu-img` and `genisoimage`. About 4 GB of free disk
+  for the VM, which grows as Claude Code works.
+- Optional: a USB microphone and speaker if you want to try it without a board
+  (`voice_loop.py` without `--satellite`).
+
+**Board:** an ESP32 board that [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) supports,
+with a microphone and a speaker, on the same Wi-Fi as the host. Building the firmware needs
+ESP-IDF 6 (about 3 GB with its toolchain), on any machine.
+
+Package names, as used on Fedora (the Debian and Ubuntu names are given but untested):
+
+```bash
+# Fedora
+sudo dnf install git python3 ffmpeg portaudio-devel opus \
+    qemu-kvm libvirt-daemon-driver-qemu libvirt-client passt qemu-img genisoimage
+# Debian / Ubuntu
+sudo apt install git python3-venv ffmpeg portaudio19-dev libopus0 \
+    qemu-system-x86 qemu-utils libvirt-daemon libvirt-clients passt genisoimage
+sudo usermod -aG kvm,libvirt "$USER"   # Debian/Ubuntu only; log out and back in
+```
+
+Check that KVM is usable: `ls -l /dev/kvm` should exist and be readable by you, and
+`virsh -c qemu:///session list` should run without an error.
+
 ## Setup
 
-1. **Voice host.**
+1. **Get the code.**
    ```bash
-   sudo dnf install ffmpeg portaudio-devel        # Debian/Ubuntu: sudo apt install ffmpeg portaudio19-dev
-   python -m venv .venv && source .venv/bin/activate
+   git clone https://github.com/cwe6279/clara-code.git && cd clara-code
+   python3 -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
-   cp .env.example .env                           # then put your Anthropic API key in it
+   cp .env.example .env && chmod 600 .env        # then put Clara's Anthropic API key in it
    ```
-2. **Box.** Build the VM and install Claude Code in it: [docs/CLARA_BOX.md](docs/CLARA_BOX.md).
-   Then run `clara-box-key` to give it its own API key.
-
-   **Set a spend limit on that key.** In the Anthropic Console, create a separate workspace for
-   the box's key and give the workspace a monthly spend limit. Do this before the first job.
-   Claude Code works unattended and reads the web, and the caps in this project are counted
-   inside the box, where a misled job could get around them. The Console limit is enforced by
-   Anthropic and cannot be bypassed from the box.
-3. **Board.** Flash xiaozhi-esp32 for your board and point it at the host:
-   [docs/SATELLITE_ESP32.md](docs/SATELLITE_ESP32.md).
-4. **Run.**
+   `pip install` pulls in the speech models' libraries; the models themselves download on first
+   use to `~/.cache` (a few hundred MB for Whisper `small.en` and a Piper voice).
+   `pytest tests` checks the install; it needs no board, sound device or VM.
+2. **Box.** Build the VM and install Claude Code in it, following
+   [docs/CLARA_BOX.md](docs/CLARA_BOX.md) (about 20 minutes, most of it downloads). That also
+   installs the `clara-box`, `clara-box-key` and `clara-box-costs` commands.
+3. **The box's API key, with a spend limit.** In the Anthropic Console, create a separate
+   workspace, give it a monthly spend limit, and create the box's key inside it. Then run
+   `clara-box-key` and paste the key when asked (it is not shown or saved on the host).
+   Do this before the first job. Claude Code works unattended and reads the web, and the caps in
+   this project are counted inside the box, where a misled job could get around them. The
+   Console limit is enforced by Anthropic and cannot be bypassed from the box.
+4. **Board.** Build xiaozhi-esp32 for your board with its OTA address pointing at the host
+   (`http://<host address>:8030/xiaozhi/ota/`), flash it, and join it to your Wi-Fi:
+   [docs/SATELLITE_ESP32.md](docs/SATELLITE_ESP32.md). Give the host a fixed address (a DHCP
+   reservation on your router), since the board stores it.
+5. **Run.**
    ```bash
    python tools/claude_box_relay.py &
-   python voice_loop.py --face clara --satellite --no-window --agent-url http://127.0.0.1:8032
+   python voice_loop.py --face clara --satellite --no-window --stt whisper --tts piper \
+       --agent-url http://127.0.0.1:8032
    ```
-5. **Lock it to your board.** Open the control page (http://localhost:8020), go to **Boards**,
+   Wake the board and talk. The first start downloads the speech models, so give it a minute.
+   For an ElevenLabs voice, drop `--tts piper` and set `ELEVENLABS_API_KEY` in `.env`. More
+   options (voices, wake words, models): [docs/TALKER.md](docs/TALKER.md).
+6. **Lock it to your board.** Open the control page (http://localhost:8020), go to **Boards**,
    and press **Allow only this board**. From then on every other device on your network is
    refused. A new board you add later shows up under **Refused**; press **Allow** next to it.
    Boards allowed on the page are saved in `settings.json`. You can also list them in `.env` as
    `SATELLITE_ALLOW=<id>,<id>` (or `--satellite-allow`); those can only be removed there.
+
+Both programs run in the foreground. Nothing here installs them as services yet, so to keep
+Clara running after you log out, wrap the two commands in systemd user units of your own.
 
 ## Using it
 
@@ -77,7 +129,7 @@ would also need a rule for it.
 
 Limits are set in the environment: `CLARA_BOX_CLAUDE_JOB_USD` (default 1.00 per job) and
 `CLARA_BOX_CLAUDE_MONTHLY_USD` (default 20). They are a convenience. The spend limit you set on
-the box's API key in the Anthropic Console (Setup, step 2) is the cap to rely on.
+the box's API key in the Anthropic Console (Setup, step 3) is the cap to rely on.
 
 ## Hardware
 
