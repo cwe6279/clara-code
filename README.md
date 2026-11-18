@@ -153,6 +153,17 @@ expect to need systemd turned on in WSL (`/etc/wsl.conf`), nested virtualization
 inside it (Windows 11), and `usbipd` if a board has to be attached over USB. The board talks
 to the host over Wi-Fi, so it does not care what the host runs.
 
+## Privacy
+
+Photos, scans, recordings and session logs stay on your machine: `captures/`, `logs/` and the
+rest are in `.gitignore`, and a pre-commit hook (`tools/no_captures.py`) refuses any commit that
+adds a capture, or an image or sound file outside `faces/` and `docs/`, even with `git add -f`.
+Turn the hook on once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## Tests
 
 ```bash
