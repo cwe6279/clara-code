@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Clara Box
+Comment=Clara's command line (tmux in her VM)
+Exec=ptyxis --new-window -x @HOME@/.local/bin/clara-box
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;

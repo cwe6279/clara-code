@@ -1941,6 +1941,8 @@ def main(argv=None) -> int:
 
     if satellite is not None:
         _wire_satellite(satellite, audio, loop, app, body)
+        if runner is not None:                     # an errand is out: stay connected to report it
+            audio.keep_open = lambda: bool(runner.pending())
 
     panel = None
     if not args.no_web:

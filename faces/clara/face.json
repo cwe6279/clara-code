@@ -94,9 +94,9 @@
   },
   "memory": true,
   "errands": [
-    "search the web and read pages",
-    "read and search email, and draft replies",
-    "read the calendar"
+    "hand any job to Claude Code on your own computer (your box): research on the web, read pages, write and run code, build and fix things, make files",
+    "pass on follow-ups to the job it just did, and bring its questions back to the owner",
+    "say what Claude Code has cost so far"
   ],
   "dictation_words": [
     "take this down",

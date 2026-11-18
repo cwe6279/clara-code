@@ -1,0 +1,11 @@
+#!/bin/bash
+# Put (or rotate) Clara's own Anthropic API key in her box.
+#   clara-box-key            paste the key when asked (not shown, not saved on this machine)
+#   clara-box-key FILE       read it from FILE
+# Then revoke the old key in the Anthropic Console.
+D="$HOME/.local/share/clara-box"
+if [ -n "$1" ]; then key=$(tr -d '[:space:]' < "$1"); else read -rsp "Clara's API key: " key; echo; key=$(tr -d '[:space:]' <<<"$key"); fi
+case "$key" in sk-ant-*) ;; *) echo "That doesn't look like an Anthropic key (sk-ant-...). Nothing changed."; exit 1;; esac
+printf '%s' "$key" | ssh -i "$D/keys/clara" -p 2222 -o UserKnownHostsFile="$D/known_hosts" -o BatchMode=yes clara@127.0.0.1 \
+  'umask 077; mkdir -p ~/.config; cat > ~/.config/anthropic-key.new && mv ~/.config/anthropic-key.new ~/.config/anthropic-key && echo "Key installed in clara-box."'
+unset key

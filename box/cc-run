@@ -1,0 +1,25 @@
+#!/bin/bash
+# cc-run ID TIMEOUT — task on stdin; settings in env (set by tools/claude_box_relay.py):
+#   CC_MODEL (default haiku), CC_BUDGET (USD per job, default 1), CC_RESUME (session id),
+#   CC_MODE (permission mode, default auto).
+# Runs Claude Code headless in tmux window cc-ID (watchable), waits, prints the result JSON.
+id=$1; secs=${2:-600}
+model=${CC_MODEL:-haiku}; budget=${CC_BUDGET:-1}; resume=${CC_RESUME:-}; mode=${CC_MODE:-auto}
+dir=$HOME/work/claude; mkdir -p "$dir"
+task="$dir/$id.task"; events="$dir/$id.jsonl"; done_f="$dir/$id.done"
+cat > "$task"; rm -f "$events" "$done_f"
+keyf=$HOME/.config/anthropic-key
+[ -s "$keyf" ] || { echo "{\"is_error\":true,\"result\":\"No API key in the box yet (~/.config/anthropic-key).\"}"; exit 2; }
+args="--model $model --max-budget-usd $budget --permission-mode $mode --output-format stream-json --verbose${resume:+ --resume $resume}"
+inner="export ANTHROPIC_API_KEY=\$(cat $keyf) PATH=\$HOME/.local/bin:\$HOME/venv/bin:\$PATH; cd \$HOME/work;
+echo \"── Claude Code task $id \$(date +%T)  model $model, budget \\\$$budget${resume:+, continuing $resume}\"; sed \"s/^/  /\" $task; echo;
+timeout -k 10 $secs claude -p \"\$(cat $task)\" $args < /dev/null \
+ | tee $events | jq -r --unbuffered 'if .type==\"assistant\" then (.message.content[]? | if .type==\"text\" then \"» \"+.text elif .type==\"tool_use\" then \"⚙ \"+.name+\" \"+((.input|tostring)[0:160]) else empty end) elif .type==\"result\" then \"── done (\"+(.num_turns|tostring)+\" turns, $\"+(.total_cost_usd|tostring)+\")\" else empty end';
+echo \$? > $done_f; echo; echo \"[window closes in 10 min]\"; sleep 600"
+tmux kill-window -t "clara:cc-$id" 2>/dev/null
+tmux new-window -d -t clara -n "cc-$id" "$inner"
+{ printf "\n\033[1;36m── %s  claude code task %s (%s, window cc-%s)\033[0m\n" "$(date +%T)" "$id" "$model" "$id"; awk "NR<=10 {print \"  \" \$0}" "$task"; } >> $HOME/work/.activity.log
+end=$(( $(date +%s) + secs + 20 ))
+while [ ! -e "$done_f" ] && [ $(date +%s) -lt $end ]; do sleep 1; done
+r=$(grep "\"type\":\"result\"" "$events" 2>/dev/null | tail -1)
+if [ -n "$r" ]; then echo "$r"; else echo "{\"is_error\":true,\"result\":\"Claude Code gave no result (timed out after ${secs}s or failed); see tmux window cc-$id.\"}"; fi

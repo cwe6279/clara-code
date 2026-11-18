@@ -403,3 +403,24 @@ def test_a_scan_is_cleaned_shadow_evened_out_before_the_model_reads_it():
     left, right = out[:, :200], out[:, 600:]
     assert abs(float(np.median(left)) - float(np.median(right))) < 25   # paper even across the page
     assert out.ndim == 2                                                # greyscale
+
+
+def test_channel_stays_open_while_an_errand_is_out():
+    """A job she will report on is running: the quiet timeout must not send the board idle,
+    or the news that it finished is spoken to nobody. 'Stop listening' still closes."""
+    now = [100.0]
+    eng = _bare_engine(now)
+    out_there = [True]
+    eng.keep_open = lambda: out_there[0]
+    eng.speaking = True
+    eng.tick()
+    now[0] += eng.idle_close_s + 300
+    assert ("close", None) not in eng.tick()
+    out_there[0] = False                       # the errand came back and nothing more was said
+    assert ("close", None) in eng.tick()
+
+    eng2 = _bare_engine(now)
+    eng2.keep_open = lambda: True
+    eng2.end_conversation()
+    now[0] += 0.1
+    assert ("close", None) in eng2.tick()      # an explicit end wins over a running errand

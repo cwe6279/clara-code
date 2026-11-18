@@ -1,3 +1,38 @@
+# clara-code — a voice assistant in front of Claude Code
+
+Clara is a voice assistant on a small ESP32 board. You talk to her; when you ask for real work
+(research, code, a page, a file) she hands it to Claude Code, which runs in its own locked-down
+VM, and she tells you the result out loud. Claude Code's questions come back to you by voice,
+and follow-ups continue the same job.
+
+| Piece | Where |
+|---|---|
+| Board firmware (mic, speaker, camera) | [cwe6279/clara-esp32](https://github.com/cwe6279/clara-esp32) |
+| Voice host: mic → STT → LLM → TTS, the character | this repo (`voice_loop.py`, `talker/`, `faces/clara/`) |
+| Relay: Clara's errands → Claude Code | `tools/claude_box_relay.py` |
+| The VM Claude Code works in | `box/`, guide in [docs/CLARA_BOX.md](docs/CLARA_BOX.md) |
+
+Quick start, once the box is built ([docs/CLARA_BOX.md](docs/CLARA_BOX.md)) and the board is
+flashed ([docs/SATELLITE_ESP32.md](docs/SATELLITE_ESP32.md)):
+
+```bash
+python tools/claude_box_relay.py &
+python voice_loop.py --face clara --satellite --no-window --agent-url http://127.0.0.1:8032
+```
+
+**Host machine.** This is built for a Linux host (developed on Fedora): the box is a KVM
+virtual machine under libvirt, and the launchers are shell scripts. On Windows, run the host
+side inside WSL2. That has not been tested here; expect to need systemd turned on in WSL
+(`/etc/wsl.conf`), nested virtualization so KVM works inside it (Windows 11), and `usbipd` if
+a board has to be attached over USB. The board itself talks to the host over Wi-Fi, so it does
+not care what the host runs.
+
+The voice host is the Talker engine, forked from
+[cwe6279/animation](https://github.com/cwe6279/animation) at its `clara-claude-code` branch.
+Everything below is Talker's own documentation and still applies.
+
+---
+
 # Talker — Phoneme-Synced Animated Face
 
 A real-time animated talking character driven by streaming TTS and phoneme lip sync:

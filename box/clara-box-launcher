@@ -1,0 +1,9 @@
+#!/bin/bash
+# Open Clara's tmux session in her VM (starts the VM if it is off).
+D="$HOME/.local/share/clara-box"
+virsh -q -c qemu:///session domstate clara-box | grep -q running || virsh -q -c qemu:///session start clara-box
+for i in $(seq 1 60); do
+  ssh -q -i "$D/keys/clara" -p 2222 -o UserKnownHostsFile="$D/known_hosts" -o BatchMode=yes -o ConnectTimeout=2 clara@127.0.0.1 true && break
+  sleep 1
+done
+exec ssh -t -i "$D/keys/clara" -p 2222 -o UserKnownHostsFile="$D/known_hosts" clara@127.0.0.1 tmux new-session -A -s clara -c work

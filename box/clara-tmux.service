@@ -1,0 +1,9 @@
+[Unit]
+Description=Clara tmux session
+[Service]
+Type=forking
+ExecStart=/usr/bin/tmux new-session -d -s clara -n shell -c %h/work \; new-window -d -n activity "tail -n 200 -F %h/work/.activity.log"
+ExecStop=/usr/bin/tmux kill-session -t clara
+Restart=on-failure
+[Install]
+WantedBy=default.target

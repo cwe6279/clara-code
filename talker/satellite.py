@@ -187,6 +187,9 @@ class SatelliteAudioEngine(BaseAudioEngine):
         # wired by voice_loop: the schedule (for emotions), is-the-pipeline-busy, barge-in
         self.schedule = None
         self.busy: Callable[[], bool] = lambda: False
+        # work she will report on is still running (an errand): the quiet timeout does not close
+        # the channel, or the news that it finished would be spoken to a board that has gone idle
+        self.keep_open: Callable[[], bool] = lambda: False
         self.on_abort: Callable[[], None] = lambda: None
         self.on_wake: Callable[[str], None] = lambda text: None
         self.device_face = False                   # the board draws Clara's face: send mouth shapes
@@ -360,7 +363,8 @@ class SatelliteAudioEngine(BaseAudioEngine):
             self.server.on_event("satellite", f"tts stop (played {self._queue_end / self.sample_rate:.1f} s on the timeline)")
             out.append(("json", {"type": "tts", "state": "stop"}))
             self._idle_deadline = self._clock() + (0.0 if self._end_after_speech else self.idle_close_s)
-        if self._idle_deadline is not None and self._clock() > self._idle_deadline and not self.busy():
+        if self._idle_deadline is not None and self._clock() > self._idle_deadline and not self.busy() \
+                and (self._end_after_speech or not self.keep_open()):
             self._idle_deadline = None
             self._end_after_speech = False
             out.append(("close", None))
