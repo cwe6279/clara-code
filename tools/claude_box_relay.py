@@ -60,6 +60,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -731,6 +732,13 @@ def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
 
 
 def main() -> int:
+    # The repo's .env (caps, AGENT_RELAY_TOKEN), as the voice host reads it; the shell still wins.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from talker.env_config import load_dotenv
+        load_dotenv()
+    except Exception as e:                       # the relay must start even without the package
+        print(f"[relay] .env not read: {e}")
     env = os.environ.get
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--host", default=env("RELAY_HOST", "127.0.0.1"))
