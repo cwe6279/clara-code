@@ -239,8 +239,9 @@ class VoiceBox(FakeRunner):
 
     def box_app(self, args, timeout=30):
         self.box_calls.append(args)
-        if args[0] == "list":
-            return 0, json.dumps({"apps": self.apps, "library": self.lib, "strays": [], "settings": {}})
+        if args[0] == "list":                       # as box-app gives it: descriptions only in the library
+            apps = [{k: v for k, v in a.items() if k != "about"} for a in self.apps]
+            return 0, json.dumps({"apps": apps, "library": self.lib, "strays": [], "settings": {}})
         if args[0] == "restart":
             return 0, f"{args[1]}: http://localhost:8102 on the owner's computer"
         return 0, "ok"
@@ -255,6 +256,7 @@ def test_voice_requests_about_box_pages_skip_claude_code(tmp_path):
     relay = R.Relay(tmp_path / "s.json", R.Ledger(tmp_path / "c.jsonl"), runner)
     s = _say(relay, "What's running in your box?")
     assert "2 pages are running" in s and "localhost port 8100" in s and "kept" in s and "24 hours left" in s
+    assert "the weather, news and markets dashboard" in s and "the 3D scatter plot" in s
     assert "Stopped the 3D scatter plot" in _say(relay, "Stop the 3D scatter plot")
     assert runner.box_calls[-1] == ["stop", "scatter3d"]
     assert "is kept" in _say(relay, "Please keep the weather dashboard running")

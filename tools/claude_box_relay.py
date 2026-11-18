@@ -476,6 +476,8 @@ def box_voice(runner, text: str):
     except ValueError:
         return None
     apps, lib = data.get("apps", []), data.get("library", [])
+    about = {e["name"]: e.get("about") for e in lib if e.get("about")}
+    apps = [dict(a, about=a.get("about") or about.get(a["name"], "")) for a in apps]   # descriptions live in the library
     if listing:
         if not apps:
             return "Nothing is running in my box right now."
