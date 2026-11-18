@@ -394,8 +394,8 @@ VOICE_PREFIX_RE = re.compile(r"^(?:\s*(?:please|ask claude code to|have claude c
 VOICE_BUILD_RE = re.compile(r"\b(build|create|write|add|change|fix|update|edit|redesign|refactor|improve|"
                             r"research|find|search|look up|compare|log|track|"
                             r"make (?:a|an|me|it look|some|the page)\b|so that|which shows|that shows)\b", re.I)
-VOICE_LIST_RE = re.compile(r"\b(what|which)\b.{0,40}\b(running|up|serving|open|live)\b|"
-                           r"\blist\b.{0,25}\b(servers|pages|apps|sites)\b", re.I)
+VOICE_LIST_RE = re.compile(r"\b(what|which)\b.{0,40}\b(running|up|serving|served|open|live)\b|"
+                           r"\b(list|show)\b.{0,40}\b(running|served|servers|pages|apps|sites)\b", re.I)
 VOICE_LIBRARY_RE = re.compile(r"\blibrary\b|\bwhat (?:pages|apps|sites|things) (?:have|has|did) (?:you|it|claude code)"
                               r" (?:built|made)\b|\bwhat have you built\b", re.I)
 VOICE_ACTIONS = [
@@ -407,7 +407,8 @@ VOICE_ACTIONS = [
     ("open", re.compile(r"^(?:open|pull up)\b", re.I)),
 ]
 # a listing has to be about the box itself, not servers in general
-VOICE_SERVER_WORDS = re.compile(r"\b(box|you(?:'re| are)? (?:serving|running|hosting)|have (?:you )?(?:got )?(?:running|up))\b", re.I)
+VOICE_SERVER_WORDS = re.compile(r"\b(box|you(?:'re| are)? (?:serving|running|hosting)|have (?:you )?(?:got )?(?:running|up)|"
+                                r"localhost|ports? 81[01]\d)\b", re.I)
 _STOP_WORDS = set("""the a an my your our this that it its one ones please in on of to for with and or which is are
     page pages app apps server servers site sites box running up again back now thing claude code also too
     there here just me us all can you could would will be
@@ -434,7 +435,7 @@ def _pick(entries: list, text: str) -> tuple:
         return (entries[0], None) if len(entries) == 1 else (None, "several")
     scored = []
     for e in entries:
-        have = _words(e["name"].replace("-", " ")) | _words(e.get("about") or "")
+        have = _words(e["name"].replace("-", " ")) | _words(e.get("about") or "") | ({str(e["port"])} if e.get("port") else set())
         scored.append((len(want & have), e))
     best = max((s for s, _ in scored), default=0)
     hits = [e for s, e in scored if s == best and s > 0]
@@ -461,11 +462,14 @@ def box_voice(runner, text: str):
     """A spoken answer for a short request about the box's pages, done with box-app; None to leave it
     to Claude Code."""
     t = VOICE_PREFIX_RE.sub("", text.strip()).strip().rstrip(".!?")
-    if not t or len(t.split()) > 16 or VOICE_BUILD_RE.search(t) or not hasattr(runner, "box_app"):
+    if not t or VOICE_BUILD_RE.search(t) or not hasattr(runner, "box_app"):
         return None
-    action = next((a for a, rx in VOICE_ACTIONS if rx.search(t)), None)
+    # Clara's planner rewords a request at length. Looking is read-only, so a long request may
+    # still be a listing; changing something must be short and name one page.
+    words = len(t.split())
+    action = next((a for a, rx in VOICE_ACTIONS if rx.search(t)), None) if words <= 30 else None
     listing = action is None and VOICE_LIST_RE.search(t) and VOICE_SERVER_WORDS.search(t)
-    library = action is None and not listing and VOICE_LIBRARY_RE.search(t)
+    library = action is None and not listing and VOICE_LIBRARY_RE.search(t) and words <= 30
     if not (action or listing or library):
         return None
     code, out = runner.box_app(["list", "--json"])

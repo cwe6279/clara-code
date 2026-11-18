@@ -281,3 +281,14 @@ def test_anything_unclear_still_goes_to_claude_code(tmp_path):
         relay.last_at = 0
     assert len(runner.calls) == len(jobs)
     assert not [c for c in runner.box_calls if c[0] != "list"]  # nothing was stopped, kept or started
+
+
+def test_the_planners_long_rewording_still_takes_the_shortcut(tmp_path):
+    runner = VoiceBox()
+    relay = R.Relay(tmp_path / "s.json", R.Ledger(tmp_path / "c.jsonl"), runner)
+    s = _say(relay, "List everything currently running on the box: identify which pages/servers are being served "
+                    "on localhost ports 8100-8119, describe what each one is, note which are kept versus set to "
+                    "expire, and report any other notable background processes. Keep the report brief.")
+    assert "2 pages are running" in s
+    _say(relay, "Stop the 3D scatter plot server running in the box on port 8101 using box-app, and confirm it stopped.")
+    assert runner.box_calls[-1] == ["stop", "scatter3d"] and not runner.calls
