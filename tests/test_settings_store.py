@@ -77,3 +77,13 @@ def test_an_older_name_counts_as_set_and_saving_tidies_it(tmp_path):
     assert "FISH_AUDIO_KEY" not in rows and "fish-secret" not in json.dumps(st.view())
     st.set("FISH_AUDIO_API_KEY", "new-fish")
     assert env.read_text() == "FISH_AUDIO_API_KEY=new-fish\n"
+
+
+def test_restart_explains_itself_when_not_a_service(tmp_path, monkeypatch):
+    st, _ = _store(tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    assert "not running as a service" in st.restart()["error"]
+    panel = WebPanel(port=0, host="127.0.0.1")
+    panel.settings = st
+    r = panel.settings_do("restart", {})
+    assert "error" in r and any("restart failed" in e["text"] for e in panel.events)   # kept on the page's record

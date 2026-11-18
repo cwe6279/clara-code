@@ -434,9 +434,11 @@ class WebPanel:
             else:
                 return {"error": f"unknown request {op}"}
         except (ValueError, PermissionError, RuntimeError, OSError) as e:
-            return {"error": str(e)}
+            r = {"error": str(e)}
         if "message" in r:
             self.record("settings", r["message"])
+        elif "error" in r:
+            self.record("settings", f"{op} failed: {r['error']}")
         return r
 
     def _box(self, method: str, path: str, body: Optional[dict] = None):
@@ -896,7 +898,8 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 <section id="settings">
   <p class="help">Clara's settings, kept in <code>.env</code> in her folder. Keys are never shown: you can replace or clear one, not read it. Most settings are read when she starts, so each says what has to restart.</p>
   <div id="stro" class="help bad" style="display:none"></div>
-  <div id="stpending" class="card" style="display:none;margin:.6rem 0"><b class="warn">Saved changes apply after a restart.</b> <button class="act primary" onclick="stRestart()">Restart Clara</button> <span class="help" id="strestmsg"></span></div>
+  <div id="stpending" class="card" style="display:none;margin:.6rem 0"><b class="warn">Saved changes apply after a restart.</b> <button class="act primary" onclick="stRestart()">Restart Clara</button></div>
+  <div id="ststatus" class="card" style="display:none;margin:.6rem 0;position:sticky;top:.4rem;z-index:2"></div>
   <div id="stgroups"></div>
   <h2>Add a setting</h2>
   <div class="row"><input type="text" id="stnewk" placeholder="NAME" style="width:16rem;text-transform:uppercase"><input type="text" id="stnewv" placeholder="value" style="width:20rem"><button class="act" onclick="stAdd()">Add</button></div>
@@ -1046,9 +1049,22 @@ async function stClear(k){if(!confirm('Remove '+k+' from .env?'))return;const r=
 async function stAdd(){const k=$('#stnewk').value.trim().toUpperCase();const r=await post('/api/settings/set',{key:k,value:$('#stnewv').value});toast(r.error||r.message);if(!r.error){$('#stnewk').value='';$('#stnewv').value=''}settings()}
 async function stArgs(){const r=await post('/api/settings/args',{args:$('#stargs').value});toast(r.error||r.message);settings()}
 async function stSvc(n,on){const r=await post('/api/settings/service',{name:n,on});toast(r.error||r.message);settings()}
-async function stRestart(){if(!confirm('Restart Clara now? She is away for a few seconds.'))return;let r=await post('/api/settings/restart',{});
- if(r.busy&&confirm(r.error+'. Restart anyway and cut it short?'))r=await post('/api/settings/restart',{force:true});
- toast(r.error||r.message);if(!r.error){$('#strestmsg').textContent='restarting…';setTimeout(()=>location.reload(),8000)}}
+function stStatus(cls,html){const b=$('#ststatus');b.style.display='block';b.innerHTML=`<span class="${cls}">${html}</span>`}
+let ST_RESTARTING=false;
+async function stRestart(){if(ST_RESTARTING)return;if(!confirm('Restart Clara now? She is away for a few seconds.'))return;
+ let r;try{r=await post('/api/settings/restart',{})}catch(e){r={error:'the control page did not answer: '+e}}
+ if(r.busy){if(!confirm(r.error+'. Restart anyway and cut it short?')){stStatus('warn','Not restarted: '+esc(r.error)+'.');return}
+  r=await post('/api/settings/restart',{force:true})}
+ if(r.error){stStatus('bad','<b>Not restarted.</b> '+esc(r.error));return}
+ ST_RESTARTING=true;$('#stpending').style.display='none';
+ const want=r.services,asked=r.asked,t0=Date.now();stStatus('warn','<b>Restarting Clara…</b> '+want.join(' and ')+' are stopping and starting again.');
+ const tick=async()=>{let d=null;try{d=await (await fetch('/api/settings',{cache:'no-store'})).json()}catch(e){}
+  const secs=Math.round((Date.now()-t0)/1000);
+  if(d){const back=want.every(n=>{const v=d.services.find(x=>x.name===n);return v&&v.active==='active'&&v.since&&v.since>=asked-1});
+   if(back){ST_RESTARTING=false;stStatus('ok','<b>Clara is back</b>, restarted at '+new Date().toLocaleTimeString()+' ('+secs+' s). Saved settings are in use; the board reconnects when she is next woken.');settings();return}}
+  if(secs>60){ST_RESTARTING=false;stStatus('bad','<b>Clara did not come back within a minute.</b> Check <code>systemctl --user status clara-host clara-relay</code> on this computer.');return}
+  stStatus('warn','<b>Restarting Clara…</b> '+(d?'waiting for the services to start':'the page is reconnecting')+' ('+secs+' s)');setTimeout(tick,1000)};
+ setTimeout(tick,1500)}
 function boxLib(r){const day=t=>t?new Date(t*1000).toLocaleDateString():'';
  $('#boxlib').innerHTML='<tr><th>name</th><th>what it is</th><th>last run</th><th>runs</th><th>folder</th><th></th></tr>'+((r.library||[]).length?r.library.map(e=>`<tr><td><b>${esc(e.name)}</b></td><td>${esc(e.about||'')}</td><td>${day(e.last_started)}${e.running?' <span class="ok">running</span>':(e.why?'<div class="help">'+esc(e.why)+'</div>':'')}</td><td>${e.starts}</td><td class="help">${esc(e.dir)}${e.dir_exists?'':' <span class="bad">(gone)</span>'}</td><td style="white-space:nowrap">${e.running?'':`${e.dir_exists?`<button class="act" onclick="boxDo('restart',{name:'${esc(e.name)}'})">Start again</button> `:''}<button class="act" onclick="boxForget('${esc(e.name)}')">Forget</button>`}</td></tr>`).join(''):'<tr><td class="help" colspan="6">empty</td></tr>')}
 async function boxForget(n){if(confirm('Remove '+n+' from the library? Its files in the box are not deleted.'))boxDo('forget',{name:n})}

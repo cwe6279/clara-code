@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 import shutil
 import subprocess
 from typing import Any, Dict, List, Optional
@@ -149,12 +150,15 @@ class SettingsStore:
             return []
         out = []
         for name in SERVICES:
-            r = subprocess.run(["systemctl", "--user", "show", name, "-p", "ActiveState", "-p", "UnitFileState",
-                                "-p", "LoadState"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run(["systemctl", "--user", "show", name, "--timestamp=unix", "-p", "ActiveState",
+                                "-p", "UnitFileState", "-p", "LoadState", "-p", "ActiveEnterTimestamp"],
+                               capture_output=True, text=True, timeout=5)
             st = dict(line.split("=", 1) for line in r.stdout.splitlines() if "=" in line)
             if st.get("LoadState") == "not-found":
                 continue
-            out.append({"name": name, "active": st.get("ActiveState", ""), "enabled": st.get("UnitFileState", "")})
+            since = st.get("ActiveEnterTimestamp", "").lstrip("@")
+            out.append({"name": name, "active": st.get("ActiveState", ""), "enabled": st.get("UnitFileState", ""),
+                        "since": float(since) if since.replace(".", "", 1).isdigit() else None})
         return out
 
     # -- writing ---------------------------------------------------------------------------------
@@ -218,7 +222,11 @@ class SettingsStore:
             return {"error": "Clara is not running as a service here; restart her by hand "
                              "(or install the services: services/install.sh)"}
         names = [n for n in ("clara-relay", "clara-host") if n in {s["name"] for s in self.services()}]
-        subprocess.Popen(["systemctl", "--user", "--no-block", "restart"] + names,
+        if not names:
+            return {"error": "the clara-relay and clara-host services are not installed (services/install.sh)"}
+        asked = time.time()
+        # half a second's grace, so this answer reaches the page before Clara stops
+        subprocess.Popen(["sh", "-c", "sleep 0.5; exec systemctl --user --no-block restart " + " ".join(names)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         self.pending.clear()
-        return {"message": "restarting: the page comes back in a few seconds"}
+        return {"message": "restarting " + " and ".join(names), "asked": asked, "services": names}
