@@ -2,6 +2,7 @@
 import asyncio
 import json
 import socket
+import threading
 import time
 
 import numpy as np
@@ -478,3 +479,27 @@ def test_board_id_is_noted_from_a_reconnect_without_check_in(server):
     asyncio.run(go())
     assert srv.device.get("client") == "uuid-1" and srv.device.get("ip") == "127.0.0.1"
     assert sum("--satellite-allow uuid-1" in t for _, t in events) == 1
+
+
+def test_camera_exposure_goes_to_the_board_and_a_snapshot_is_not_described(monkeypatch):
+    """Control page: exposure settings reach the board's tool; a snapshot skips the vision model."""
+    from talker.board_eyes import BoardEyes
+    sent = []
+    srv = SatelliteServer(host="127.0.0.1", port=0, on_event=lambda k, t: None)
+    srv.send_json = sent.append
+    srv.set_camera_exposure(ae_level=4)                      # not connected: kept for the connect
+    assert srv.camera_exposure == {"ae_level": 4, "gain_ceiling": 16, "night": 0} and not sent
+    monkeypatch.setattr(SatelliteServer, "connected", property(lambda self: True))
+    if True:
+        srv.set_camera_exposure(gain_ceiling=32, night=None)
+        call = sent[-1]["payload"]["params"]
+        assert call == {"name": "self.camera.set_exposure", "arguments": {"ae_level": 4, "gain_ceiling": 32, "night": 0}}
+        described = []
+        eyes = BoardEyes(srv, lambda jpeg, q, *m: described.append(q) or "a room")
+
+        def board_takes_photo(question=""):
+            threading.Thread(target=lambda: srv.photo_handler(b"\xff\xd8jpeg", question), daemon=True).start()
+            return True
+        srv.take_photo = board_takes_photo
+        assert eyes.snapshot(timeout=3) == b"\xff\xd8jpeg" and not described
+        assert eyes.look_now(question="what is it?") == "a room" and described == ["what is it?"]

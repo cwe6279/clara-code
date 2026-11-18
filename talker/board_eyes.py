@@ -221,6 +221,13 @@ class BoardEyes:
         t0 = time.monotonic()
         with self._lock:
             mode, save = self._mode, self._save
+        if mode == "raw":                        # a snapshot for the control page: no model, nothing kept
+            with self._done:
+                self.last_jpeg = jpeg
+                self._answered = self._asked
+                self._done.notify_all()
+            print(f"[eyes] snapshot {len(jpeg) // 1024} KB for the control page")
+            return "Snapshot taken."
         try:
             text = self.describe(jpeg, question, mode) if mode != "scene" else self.describe(jpeg, question)
             self.stats["described"] += 1
@@ -308,6 +315,27 @@ class BoardEyes:
                     return ""
                 self._done.wait(left)
             return self._latest
+
+    def snapshot(self, timeout: Optional[float] = None) -> Optional[bytes]:
+        """A fresh photo's JPEG for the control page's Take a snapshot: not described, not saved."""
+        wait = timeout or self.timeout
+        with self._done:
+            self._asked += 1
+            ticket = self._asked
+            self._mode, self._save = "raw", ""
+            before = self.last_jpeg
+        if not self.server.take_photo("snapshot"):
+            with self._done:
+                self._answered = max(self._answered, ticket)
+            return None
+        deadline = time.monotonic() + wait
+        with self._done:
+            while self._answered < ticket:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self._done.wait(left)
+            return self.last_jpeg if self.last_jpeg is not before else None
 
     def pending(self) -> bool:
         """A photo has been asked for and not yet described: keep the board's channel open."""

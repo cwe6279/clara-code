@@ -1962,6 +1962,9 @@ def main(argv=None) -> int:
             panel.boards = satellite
         if panel is not None and runner is not None:
             panel.box_url = lambda: runner.url
+        if panel is not None and satellite is not None and getattr(loop, "vision", None) is not None \
+                and hasattr(loop.vision, "snapshot"):
+            _board_camera_panel(panel, satellite, loop.vision)
     print(f"[start] ready in {time.time() - starting['since']:.0f} s")
 
     if stt is not None:
@@ -2103,6 +2106,33 @@ def _wire_satellite(server, audio, loop, app, body=None) -> None:
             audio.note_user_text()
             server.send_stt(text)
     loop.on_event = on_event
+
+
+def _board_camera_panel(panel, satellite, eyes) -> None:
+    """The board's camera on the control page: exposure settings on Tune (kept in settings.json,
+    sent to the board on each connect) and Take a snapshot on Test setup."""
+    from . import local_settings
+    saved = local_settings.load().get("board_camera") or {}
+    satellite.set_camera_exposure(**{k: saved.get(k) for k in ("ae_level", "gain_ceiling", "night")})
+    if panel.snapshot is None:
+        panel.snapshot = lambda: eyes.snapshot(timeout=20)
+
+    def setter(key):
+        def apply(v):
+            satellite.set_camera_exposure(**{key: int(round(float(v)))})
+            local_settings.save("board_camera", dict(satellite.camera_exposure))
+        return apply
+    get = lambda key: (satellite.camera_exposure or {}).get(key)
+    panel.tunable("board_camera_brightness", lambda: get("ae_level"), setter("ae_level"),
+                  "The board camera's brightness target, -5 (dark) to 5 (bright); 0 is the sensor's own "
+                  "default. Applies to the next photo: check with Test setup, Take a snapshot.",
+                  kind="int", lo=-5, hi=5)
+    panel.tunable("board_camera_gain_limit", lambda: get("gain_ceiling"), setter("gain_ceiling"),
+                  "The most gain the board camera may use, 1 to 64x. Higher is brighter in dim light but "
+                  "grainier; 16 is about the sensor's own default.", kind="int", unit="x", lo=1, hi=64)
+    panel.tunable("board_camera_night", lambda: bool(get("night")), lambda v: setter("night")(
+                  1 if str(v).lower() in ("1", "true", "on", "yes") else 0),
+                  "Long exposures in dim light: brighter, but a moving hand or head smears.", kind="bool")
 
 
 def _start_panel(args, parser, loop, app, audio, stt, chat, backend, watcher, manifest, face_dir, idle=None,

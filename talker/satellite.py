@@ -455,6 +455,10 @@ class SatelliteServer:
         self.locked_ids: set = set()             # allowed from .env or the command line: not removable on the page
         self.on_allow_change: Optional[Callable[[List[str]], None]] = None   # saves the page-added ids
         self.volume = volume                     # device speaker level to set on connect, 0-100
+        # The board camera's exposure (self.camera.set_exposure): ae_level -5..5, gain_ceiling 1-64,
+        # night 0/1. None: leave the board's own defaults. Sent on connect and when changed.
+        self.camera_exposure: Optional[Dict[str, int]] = None
+        self.camera_exposure_reply: Dict[str, object] = {}
         self.advertise_host = advertise_host     # None: whatever address the device reached us on
         self.token = token
         # A firmware image (build/xiaozhi.bin) to offer over the air: the device upgrades
@@ -499,6 +503,19 @@ class SatelliteServer:
 
     def send_stt(self, text: str) -> None:
         self.send_json({"type": "stt", "text": text})
+
+    def set_camera_exposure(self, **changes) -> None:
+        """Change the board camera's exposure (from any thread); kept for the next connect."""
+        cur = dict(self.camera_exposure or {"ae_level": 3, "gain_ceiling": 16, "night": 0})
+        cur.update({k: int(v) for k, v in changes.items() if v is not None})
+        self.camera_exposure = cur
+        if self.connected:
+            self.send_json(self._exposure_msg())
+
+    def _exposure_msg(self) -> dict:
+        return {"type": "mcp", "session_id": self.session_id, "payload": {
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": "self.camera.set_exposure", "arguments": dict(self.camera_exposure or {})}}}
 
     def take_photo(self, question: str = "") -> bool:
         """Ask the board's camera for a photo (from any thread). The photo arrives at PHOTO_PATH
@@ -728,6 +745,8 @@ class SatelliteServer:
                 await ws.send_json({"type": "mcp", "session_id": self.session_id, "payload": {
                     "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                     "params": {"name": "self.audio_speaker.set_volume", "arguments": {"volume": int(self.volume)}}}})
+            if self.camera_exposure is not None:   # the exposure chosen on the control page
+                await ws.send_json(self._exposure_msg())
             if self.photo_handler is not None:
                 # MCP handshake: tells the board where to upload camera photos (and asks for its tools)
                 host = f"{self.advertise_host}:{self.port}" if self.advertise_host else self._ws_host
@@ -772,6 +791,13 @@ class SatelliteServer:
             err = payload.get("error") or (res if isinstance(res, dict) and res.get("isError") else None)
             if err and self.photo_failed is not None:
                 self.photo_failed(json.dumps(err)[:200])
+            return
+        if payload.get("id") == 5:                                    # the camera exposure was set
+            res = payload.get("result") or {}
+            self.camera_exposure_reply = res if isinstance(res, dict) else {"result": res}
+            if payload.get("error") or (isinstance(res, dict) and res.get("isError")):
+                self.on_event("satellite", "the board did not take the camera exposure (older firmware?): "
+                              + json.dumps(payload.get("error") or res)[:160])
             return
         if payload.get("id") != 2:
             return
