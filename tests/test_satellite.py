@@ -476,5 +476,5 @@ def test_board_id_is_noted_from_a_reconnect_without_check_in(server):
                                     headers={"Device-Id": "aa:bb", "Client-Id": "uuid-1"}) as ws:
                 await ws.close()
     asyncio.run(go())
-    assert srv.device.get("client") == "uuid-1"
+    assert srv.device.get("client") == "uuid-1" and srv.device.get("ip") == "127.0.0.1"
     assert sum("--satellite-allow uuid-1" in t for _, t in events) == 1

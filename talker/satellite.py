@@ -676,6 +676,8 @@ class SatelliteServer:
         for key, header in (("client", "Client-Id"), ("mac", "Device-Id")):
             if request.headers.get(header) and not self.device.get(key):
                 self.device[key] = request.headers[header]
+        if request.remote and not self.device.get("ip"):
+            self.device["ip"] = request.remote
         self._note_open(request.headers.get("Client-Id", "") or request.headers.get("Device-Id", ""))
         ws = web.WebSocketResponse(heartbeat=30, max_msg_size=1 << 20)
         await ws.prepare(request)
