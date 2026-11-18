@@ -134,6 +134,15 @@ without anyone knowing:
 - **Swept hourly** by a root timer (`box-app-sweep.timer`): expired servers, and anything on
   those ports that box-app did not start, are stopped.
 - `box-app list` shows what runs; `box-app stop NAME` and `box-app stop-port PORT` stop one.
+- **The library** (`box-app library`) keeps every server box-app has run, with its folder,
+  command and a one-line description. Stopping or expiring a server never deletes its files;
+  `box-app restart NAME` brings it back, and `box-app forget NAME` drops the entry (files stay).
+
+**On the control page**, the **Box** tab shows all of this: the running servers with a link to
+each, Keep / Make temporary / Stop buttons, anything on those ports that box-app did not start
+(Adopt / Stop), and the library with Start again / Forget. The page asks the relay, which is the
+only program on the host with the box's key; it passes only fixed actions, checked names and
+ports in 8100 to 8119 to box-app.
 
 Settings are in `/etc/box-app.json` (`ttl_hours`, `max_temporary`), owned by root. `box/CLAUDE.md`
 tells Claude Code to use box-app, to keep a server only when you ask, and to give the localhost

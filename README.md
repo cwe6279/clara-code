@@ -125,7 +125,8 @@ Clara running after you log out, wrap the two commands in systemd user units of 
 - **Check spending:** "What has Claude Code cost so far?", or `clara-box-costs` on the host.
 - **Watch it work:** `clara-box` opens the VM's tmux session; each job is a window.
 - **See a page it built:** servers in the box appear on the host at `http://localhost:8100` to
-  `8119`.
+  `8119`. They stop after a day unless you say "keep it". The control page's **Box** tab lists
+  them, and keeps a library of earlier ones you can start again.
 
 Limits are set in the environment: `CLARA_BOX_CLAUDE_JOB_USD` (default 1.00 per job) and
 `CLARA_BOX_CLAUDE_MONTHLY_USD` (default 20). They are a convenience. The spend limit you set on
