@@ -32,12 +32,18 @@ Settings (environment):
     RELAY_FOLLOWUP_MIN 20  RELAY_MINUTES 15 (time limit per run)
     CLARA_BOX_CLAUDE_JOB_USD 1.00   CLARA_BOX_CLAUDE_MONTHLY_USD 20
     CLARA_BOX_KEY / CLARA_BOX_KNOWN_HOSTS / CLARA_BOX_PORT (defaults under ~/.local/share/clara-box)
+    AGENT_RELAY_TOKEN  optional shared secret; the voice host sends it as X-Relay-Token
+
+Who may call it: only programs on this machine. Requests that come from a web page (an Origin
+header, a form content type, or a Host that is not this machine's loopback name) are refused,
+so a page open in your browser cannot start a job or read the task list.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hmac
 import json
 import os
 import re
@@ -51,6 +57,10 @@ from pathlib import Path
 BOX_DIR = Path.home() / ".local" / "share" / "clara-box"
 MODELS = ("haiku", "sonnet", "opus")
 INPUT_TTL = 1800.0
+MAX_BODY = 256 * 1024              # a request body larger than this is refused
+MAX_RESULT = 20000                 # characters of a Claude Code answer that are kept
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")   # a session id goes on a command line: nothing else passes
 
 COST_RE = re.compile(r"\b(cost|costs|spent|spend|spending|bill)\b", re.I)
 BUILD_RE = re.compile(r"\b(build|make|create|write|track(er|ing)?|app|page|script)\b", re.I)
@@ -95,7 +105,7 @@ class Ledger:
 
     def add(self, entry: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "a") as f:
+        with open(os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a") as f:
             f.write(json.dumps(entry) + "\n")
 
     def spent(self, since: float) -> float:
@@ -147,6 +157,8 @@ class BoxRunner:
     def run(self, prompt: str, model: str, budget: float, session: str, minutes: int) -> dict:
         self.ensure_up()
         tid = secrets.token_hex(3)
+        if model not in MODELS or (session and not SESSION_RE.fullmatch(session)):
+            raise RuntimeError("refused: bad model or session id")   # both reach a shell in the box
         env = [f"CC_MODEL={model}", f"CC_BUDGET={budget:.2f}"] + ([f"CC_RESUME={session}"] if session else [])
         secs = minutes * 60
         p = subprocess.run(self.ssh() + ["env"] + env + ["bin/cc-run", tid, str(secs)],
@@ -192,8 +204,9 @@ class Relay:
     def _save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"tasks": self.tasks, "last_session": self.last_session,
-                                   "last_at": self.last_at}, indent=1))
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:   # task texts: owner only
+            f.write(json.dumps({"tasks": self.tasks, "last_session": self.last_session,
+                                "last_at": self.last_at}, indent=1))
         os.replace(tmp, self.state_path)
 
     def _set(self, tid: str, **fields) -> None:
@@ -284,10 +297,11 @@ class Relay:
                                  "seconds": round(time.time() - now), "session": r.get("session_id"),
                                  "error": bool(r.get("is_error")), "what": text.splitlines()[0][:80],
                                  "via": "relay"})
-            sid = r.get("session_id") or session
+            sid = str(r.get("session_id") or "")
+            sid = sid if SESSION_RE.fullmatch(sid) else session
             if sid:
                 self.last_session, self.last_at = sid, time.time()
-            result = str(r.get("result") or "").strip()
+            result = _untrusted(str(r.get("result") or ""))
             fields = {"session": sid, "model": model, "cc_task": r.get("_task")}
             if r.get("is_error"):
                 self._set(tid, state="failed", error_kind="tool_error", result=result,
@@ -305,6 +319,13 @@ class Relay:
                 print(f"[relay] {tid} done: {result[:120]}")
 
 
+def _untrusted(text: str) -> str:
+    """Claude Code's answer may repeat text from a web page. Clara's own tool syntax ({{task …}},
+    {{tool …}}) is taken out so such text cannot be passed to her as a command, and the length
+    is capped."""
+    return re.sub(r"\{\{|\}\}", "", text).strip()[:MAX_RESULT]
+
+
 def _spoken(text: str, limit: int = 700) -> str:
     """The answer is already written for the ear (CLAUDE.md); keep it to a few
     sentences and strip any markdown that slipped in."""
@@ -318,7 +339,9 @@ def _spoken(text: str, limit: int = 700) -> str:
     return (cut[:end + 1] if end > limit // 3 else cut.rstrip() + "…") + " The full answer is in the result."
 
 
-def make_handler(relay: Relay):
+def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
+    allowed_hosts = set(LOCAL_HOSTS) | ({extra_host} if extra_host else set())
+
     class Handler(BaseHTTPRequestHandler):
         def _json(self, code: int, body) -> None:
             data = json.dumps(body).encode()
@@ -328,8 +351,27 @@ def make_handler(relay: Relay):
             self.end_headers()
             self.wfile.write(data)
 
+        def _refused(self, post: bool = False) -> bool:
+            """True (and an error sent) unless this is a local program's request."""
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0] if not (self.headers.get("Host") or "").startswith("[") \
+                else (self.headers.get("Host") or "").split("]")[0] + "]"
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if host not in allowed_hosts or self.headers.get("Origin") or \
+                    self.headers.get("Sec-Fetch-Site") not in (None, "none") or (post and ctype != "application/json"):
+                self._json(403, {"error": "local programs only"})
+                return True
+            if token and not hmac.compare_digest(self.headers.get("X-Relay-Token") or "", token):
+                self._json(401, {"error": "bad or missing X-Relay-Token"})
+                return True
+            return False
+
         def _body(self) -> dict | None:
-            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return None
+            if n < 0 or n > MAX_BODY:
+                return None
             try:
                 b = json.loads(self.rfile.read(n) or b"{}")
                 return b if isinstance(b, dict) else None
@@ -337,6 +379,8 @@ def make_handler(relay: Relay):
                 return None
 
         def do_GET(self) -> None:
+            if self._refused():
+                return
             path = self.path.split("?")[0].rstrip("/")
             if path == "/health":
                 st = [t["state"] for t in relay.tasks.values()]
@@ -359,6 +403,8 @@ def make_handler(relay: Relay):
             self._json(404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if self._refused(post=True):
+                return
             path = self.path.split("?")[0].rstrip("/")
             body = self._body()
             if body is None:
@@ -405,7 +451,16 @@ def main() -> int:
         return 0
     relay = Relay(Path(a.state), Ledger(Path(env("CLARA_BOX_CLAUDE_LEDGER", str(BOX_DIR / "claude-costs.jsonl")))),
                   BoxRunner(), a.followup_min, a.minutes)
-    srv = ThreadingHTTPServer((a.host, a.port), make_handler(relay))
+    os.umask(0o077)
+    try:
+        BOX_DIR.chmod(0o700)                      # the VM disk, its key and the task texts live here
+    except OSError:
+        pass
+    token = (env("AGENT_RELAY_TOKEN") or "").strip()
+    if a.host not in ("127.0.0.1", "localhost", "::1") and not token:
+        print("[relay] refusing to listen beyond this machine without AGENT_RELAY_TOKEN set")
+        return 2
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(relay, token, a.host))
     srv.daemon_threads = True
     print(f"[relay] Claude Code in clara-box, on http://{a.host}:{a.port}  ({len(relay.tasks)} tasks on file)")
     try:

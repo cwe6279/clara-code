@@ -71,6 +71,37 @@ Claude Code in the box uses its own key, never yours.
 Owner access is a separate `admin` user (sudo) that accepts only your own SSH key:
 `ssh -p 2222 admin@127.0.0.1`.
 
+## The host side, and what is left to you
+
+The box limits what Claude Code can touch. These limit who can give it work:
+
+- **The relay takes local programs only.** It listens on `127.0.0.1` and refuses anything that
+  looks like a web page's request (an `Origin` header, a form content type, a foreign `Host`),
+  so a page open in your browser, including one the box serves, cannot start a job or read the
+  task list. It will not listen beyond this machine unless `AGENT_RELAY_TOKEN` is set; the voice
+  host sends the same variable as `X-Relay-Token`.
+- **Files are owner-only.** `~/.local/share/clara-box` is mode 700: the VM disk holds the box's
+  API key, and the relay's state holds what you asked for. Keep `.env` at 600 as well.
+- **Answers are treated as untrusted text.** Claude Code may repeat what a web page told it.
+  The relay removes Clara's own tool syntax from answers and caps their length, and only fixed
+  model names and well-formed session ids reach the box's command line.
+
+Known limits, by design:
+
+- **Anyone on your network can talk to Clara.** The board's port (8030) is open to the LAN so
+  the board can reach it, and the token it uses is handed out by the host itself, so it does not
+  keep anyone out. A device on your Wi-Fi could pose as a board and ask for jobs. Run this on a
+  network you trust, or firewall the port to the board's address.
+- **The control page has no password.** It stays on this machine unless you pass
+  `--web-host 0.0.0.0`, which opens settings, the camera snapshot and Wi-Fi joining to the LAN.
+- **A web page can mislead Claude Code.** It runs in auto mode and reads the web, so text on a
+  page can steer it. Inside the box that can waste money, read the box's API key or change the
+  box's own files (including `cc-run` and the costs it reports). It cannot reach your computer
+  or your network. This is why the key gets its own Console workspace and spend limit: that
+  limit holds even if everything in the box is compromised, and the ledger's caps do not.
+- **Pages the box serves run in your browser** at `localhost:8100` to `8119`. Treat them like
+  any page from the internet.
+
 ## Watching it
 
 `clara-box` (a launcher in `~/.local/bin`, with a "Clara Box" dock icon) starts the VM if it is

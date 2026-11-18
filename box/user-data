@@ -58,6 +58,7 @@ write_files:
       PasswordAuthentication no
       KbdInteractiveAuthentication no
       AllowTcpForwarding no
+      AllowStreamLocalForwarding no
       X11Forwarding no
       AllowAgentForwarding no
       PermitTunnel no
