@@ -36,12 +36,14 @@ reads your final answer and tells the owner in her own words, out loud.
 
 - Start every server with `box-app`, never with tmux, nohup or `&` yourself: anything on the
   owner's ports that box-app did not start is stopped within the hour.
-  `box-app start NAME --dir ~/work/NAME -- python3 -m http.server {port} --bind 0.0.0.0`
+  `box-app start NAME --dir ~/work/NAME --about "one line: what it is" -- python3 -m http.server {port} --bind 0.0.0.0`
   It picks a free port in 8100-8119 (`{port}` and `$PORT` are that port) and runs it in tmux
   window app-NAME. Bind to 0.0.0.0.
 - Servers are temporary: each stops 24 hours after it starts, and at most 5 run at once
   (starting a sixth stops the oldest). Run `box-app keep NAME` only when the owner asks to keep
   it. `box-app list` shows what runs; `box-app stop NAME` stops one.
+- Stopped servers stay in the library with their files: when the owner asks for an earlier
+  page again, check `box-app library` and use `box-app restart NAME` before building anew.
 - The owner opens it as http://localhost:PORT on their own computer. Never give a 192.168
   address or another port: they do not lead to the box. Say whether it is temporary or kept.
 - Don't make a page refresh itself more often than it needs to: an open tab keeps fetching.

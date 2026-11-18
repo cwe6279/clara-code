@@ -198,3 +198,27 @@ def test_answer_cannot_carry_claras_tool_syntax_or_a_bad_session(tmp_path):
         raise AssertionError("a bad model name reached the box")
     except RuntimeError as e:
         assert "refused" in str(e)
+
+
+class BoxFake(FakeRunner):
+    def __init__(self):
+        super().__init__([])
+        self.box_calls = []
+
+    def box_app(self, args, timeout=30):
+        self.box_calls.append(args)
+        if args[:1] == ["list"]:
+            return 0, json.dumps({"apps": [{"name": "web", "port": 8100}], "strays": [], "library": [], "settings": {}})
+        return 0, f"did {args[0]}"
+
+
+def test_box_endpoints_pass_only_checked_arguments(tmp_path):
+    runner = BoxFake()
+    assert R.box_apps(runner)[1]["apps"][0]["name"] == "web"
+    assert R.box_action(runner, "stop", {"name": "web"}) == (200, {"message": "did stop"})
+    assert R.box_action(runner, "restart", {"name": "web", "keep": True})[0] == 200
+    assert R.box_action(runner, "adopt", {"name": "x", "port": 8105})[0] == 200
+    for bad in [("stop", {"name": "web; rm -rf ~"}), ("stop-port", {"port": 22}), ("adopt", {"name": "x", "port": "8105 x"}),
+                ("shell", {"name": "web"}), ("forget", {"name": "../x"})]:
+        assert R.box_action(runner, *bad)[0] in (400, 404), bad
+    assert runner.box_calls == [["list", "--json"], ["stop", "web"], ["restart", "web", "--keep"], ["adopt", "x", "8105"]]

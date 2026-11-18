@@ -1,9 +1,10 @@
 #!/usr/bin/python3
 """box-app: the one way to run a server in Clara's box, so none is left running unmanaged.
 
-    box-app start NAME [--keep] [--dir DIR] [--port N] -- COMMAND ...
+    box-app start NAME [--keep] [--dir DIR] [--port N] [--about TEXT] -- COMMAND ...
                                  run COMMAND in tmux window app-NAME on a free port (8100-8119).
-                                 "{port}" in COMMAND, and $PORT, are that port.
+                                 "{port}" in COMMAND, and $PORT, are that port. --about: one line
+                                 saying what it is, for the library.
     box-app list [--json]        what is registered, and anything else listening on those ports
     box-app stop NAME            stop it and forget it
     box-app stop-port PORT       stop whatever listens on PORT (registered or not)
@@ -11,11 +12,16 @@
     box-app unkeep NAME          make it temporary again (expires a day from now)
     box-app adopt NAME PORT [--keep]
                                  register a server already listening on PORT
+    box-app library [--json]     every server ever started, running or not (its files are kept)
+    box-app restart NAME [--keep]
+                                 start a server from the library again, on a free port
+    box-app forget NAME          remove it from the library (its files are not touched)
     box-app sweep                stop expired servers and unregistered listeners (hourly, by a timer)
     box-app boot                 start the kept servers (when the box boots)
 
 A server is temporary unless kept: it stops 24 hours after it started. At most 5 temporary
-servers run at once; starting another stops the oldest. Settings: /etc/box-app.json
+servers run at once; starting another stops the oldest. Stopping a server never deletes its
+files, and the library keeps how to start it again. Settings: /etc/box-app.json
 ({"ttl_hours": 24, "max_temporary": 5}). Installed root-owned in /usr/local/bin, so the
 agent cannot change how it works; its list lives in the agent's own space.
 """
@@ -33,6 +39,7 @@ from pathlib import Path
 PORTS = range(8100, 8120)
 HOME = Path.home()
 STATE = HOME / ".local" / "state" / "box-app" / "apps.json"
+LIBRARY = STATE.parent / "library.json"
 LOG = HOME / "work" / ".activity.log"
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 SESSION = "clara"
@@ -58,12 +65,30 @@ class Locked:
             self.apps = json.loads(STATE.read_text()).get("apps", {})
         except (OSError, ValueError):
             self.apps = {}
+        try:
+            self.lib = json.loads(LIBRARY.read_text()).get("library", {})
+        except (OSError, ValueError):
+            self.lib = {}
         return self
 
     def save(self):
-        tmp = STATE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"apps": self.apps}, indent=1))
-        os.replace(tmp, STATE)
+        for path, key, data in ((STATE, "apps", self.apps), (LIBRARY, "library", self.lib)):
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({key: data}, indent=1))
+            os.replace(tmp, path)
+
+    def remember(self, app: dict, about: str = "") -> None:
+        """Into the library: how to start it again, kept after it stops."""
+        now = time.time()
+        e = self.lib.setdefault(app["name"], {"name": app["name"], "first": now, "starts": 0, "about": ""})
+        e.update(dir=app["dir"], cmd=app["cmd"], last_started=now, starts=int(e.get("starts", 0)) + 1)
+        e.pop("last_stopped", None)
+        if about:
+            e["about"] = about[:200]
+
+    def stopped(self, name: str, why: str) -> None:
+        if name in self.lib:
+            self.lib[name].update(last_stopped=time.time(), why=why)
 
     def __exit__(self, *a):
         fcntl.flock(self.fd, fcntl.LOCK_UN)
@@ -149,6 +174,11 @@ def status(apps: dict) -> list:
     return rows, strays
 
 
+def library_rows(st) -> list:
+    return [dict(e, running=e["name"] in st.apps, dir_exists=Path(e.get("dir", "")).is_dir())
+            for e in sorted(st.lib.values(), key=lambda e: -(e.get("last_started") or 0))]
+
+
 def cmdline(pid: int) -> str:
     try:
         return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()[:200]
@@ -178,6 +208,7 @@ def main(argv: list) -> int:
         if not opts or not command:
             raise SystemExit("usage: box-app start NAME [--keep] [--dir DIR] [--port N] -- COMMAND ...")
         name, keep, d, port = need_name(opts[0]), "--keep" in opts, os.getcwd(), None
+        about = opts[opts.index("--about") + 1] if "--about" in opts and opts.index("--about") + 1 < len(opts) else ""
         if "--dir" in opts:
             d = os.path.abspath(os.path.expanduser(opts[opts.index("--dir") + 1]))
         if "--port" in opts:
@@ -197,10 +228,12 @@ def main(argv: list) -> int:
             while not keep and len(temp) >= int(cfg["max_temporary"]):
                 old = temp.pop(0)
                 stop_app(st.apps.pop(old["name"]))
+                st.stopped(old["name"], "made room for a newer server")
                 log(f"stopped {old['name']} (port {old['port']}) to stay within {cfg['max_temporary']} temporary servers")
                 print(f"stopped the oldest temporary server, {old['name']}, to make room")
             launch(app)
             st.apps[name] = app
+            st.remember(app, about)
             st.save()
         for _ in range(30):
             if port in listeners():
@@ -218,7 +251,7 @@ def main(argv: list) -> int:
         with Locked() as st:
             rows, strays = status(st.apps)
         if "--json" in rest:
-            print(json.dumps({"apps": rows, "strays": strays, "settings": cfg}))
+            print(json.dumps({"apps": rows, "strays": strays, "settings": cfg, "library": library_rows(st)}))
             return 0
         for r in rows:
             life = "kept" if r["keep"] else f"temporary, {max(r['expires_in_h'], 0):g} h left"
@@ -239,7 +272,8 @@ def main(argv: list) -> int:
                 raise SystemExit(f"no server named {name} (box-app list)")
             if cmd == "stop":
                 stop_app(st.apps.pop(name))
-                msg = f"stopped {name}"
+                st.stopped(name, "stopped by hand")
+                msg = f"stopped {name} (still in the library: box-app restart {name})"
             elif cmd == "keep":
                 app["keep"] = True
                 msg = f"kept {name}: it stays up and restarts when the box boots"
@@ -251,6 +285,50 @@ def main(argv: list) -> int:
         print(msg)
         return 0
 
+    if cmd == "library":
+        with Locked() as st:
+            rows = library_rows(st)
+        if "--json" in rest:
+            print(json.dumps(rows))
+            return 0
+        for r in rows:
+            when = time.strftime("%Y-%m-%d", time.localtime(r.get("last_started") or 0))
+            state = "running" if r["running"] else ("files gone" if not r["dir_exists"] else "stopped")
+            print(f"{r['name']:<20} {state:<10} last run {when}, {r['starts']}x  {r['dir']}  {r.get('about', '')}")
+        if not rows:
+            print("the library is empty")
+        return 0
+
+    if cmd == "restart":
+        if not rest:
+            raise SystemExit("usage: box-app restart NAME [--keep]")
+        name = need_name(rest[0])
+        with Locked() as st:
+            e = st.lib.get(name)
+            if not e:
+                raise SystemExit(f"{name} is not in the library (box-app library)")
+            if name in st.apps:
+                raise SystemExit(f"{name} is already running on port {st.apps[name]['port']}")
+            if not Path(e["dir"]).is_dir():
+                raise SystemExit(f"its folder {e['dir']} is gone")
+            command = e["cmd"]
+        keep = ["--keep"] if "--keep" in rest else []
+        return main(["start", name, "--dir", e["dir"]] + keep + ["--", command])
+
+    if cmd == "forget":
+        if not rest:
+            raise SystemExit("usage: box-app forget NAME")
+        name = need_name(rest[0])
+        with Locked() as st:
+            if name in st.apps:
+                raise SystemExit(f"{name} is running; stop it first")
+            if not st.lib.pop(name, None):
+                raise SystemExit(f"{name} is not in the library")
+            st.save()
+        log(f"forgot {name} (its files are untouched)")
+        print(f"{name} removed from the library; its files are untouched")
+        return 0
+
     if cmd == "stop-port":
         port = int(rest[0]) if rest and rest[0].isdigit() else 0
         if port not in PORTS:
@@ -259,6 +337,7 @@ def main(argv: list) -> int:
             for n, a in list(st.apps.items()):
                 if a["port"] == port:
                     stop_app(st.apps.pop(n))
+                    st.stopped(n, "stopped by hand")
                     st.save()
             pid = listeners().get(port)
             if pid:
@@ -282,6 +361,7 @@ def main(argv: list) -> int:
         with Locked() as st:
             st.apps[name] = {"name": name, "port": port, "dir": d, "cmd": cmdline(pid), "keep": "--keep" in rest,
                              "started": now, "expires": now + ttl}
+            st.remember(st.apps[name])
             st.save()
         log(f"adopted {name} on port {port}")
         print(f"adopted {name} on port {port}" + (" (kept)" if "--keep" in rest else f" (temporary, {cfg['ttl_hours']:g} h)"))
@@ -293,6 +373,7 @@ def main(argv: list) -> int:
             for n, a in list(st.apps.items()):
                 if not a["keep"] and a["expires"] <= now:
                     stop_app(st.apps.pop(n))
+                    st.stopped(n, "expired")
                     done.append(f"expired {n} (port {a['port']})")
             known = {a["port"] for a in st.apps.values()}
             for port, pid in listeners().items():
@@ -315,6 +396,7 @@ def main(argv: list) -> int:
             gone = [n for n, a in st.apps.items() if not a["keep"]]
             for n in gone:                           # temporary ones do not survive a restart
                 st.apps.pop(n)
+                st.stopped(n, "the box restarted")
             st.save()
         return 0
 

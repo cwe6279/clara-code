@@ -1960,6 +1960,8 @@ def main(argv=None) -> int:
                              orch=orch, panel=early_panel)
         if panel is not None and satellite is not None:
             panel.boards = satellite
+        if panel is not None and runner is not None:
+            panel.box_url = lambda: runner.url
     print(f"[start] ready in {time.time() - starting['since']:.0f} s")
 
     if stt is not None:

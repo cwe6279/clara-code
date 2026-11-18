@@ -182,3 +182,27 @@ def test_boards_tab_allows_a_refused_board_and_saves_it(tmp_path):
         assert [a["id"] for a in r["allowed"]] == ["aaaa-1111"] and saved[-1] == []
     finally:
         panel.stop()
+
+
+def test_box_tab_asks_the_relay(monkeypatch):
+    import talker.errands as errands
+    seen = []
+
+    def fake_http(url, method="GET", body=None, timeout=5.0):
+        seen.append((url, method, body))
+        if method == "GET":
+            return {"apps": [], "strays": [], "library": [{"name": "old"}], "settings": {}}
+        return {"message": "restarted old"}
+    monkeypatch.setattr(errands, "_http", fake_http)
+    panel = WebPanel(port=0, host="127.0.0.1")
+    base_none = panel._box("GET", "/box/apps")[0]
+    assert "no Claude Code relay" in base_none["error"]
+    panel.box_url = lambda: "http://127.0.0.1:8032"
+    panel.start()
+    base = f"http://127.0.0.1:{panel.port}"
+    try:
+        assert json.loads(_get(base + "/api/box")[2])["library"][0]["name"] == "old"
+        assert _post(base + "/api/box/restart", {"name": "old"})["message"] == "restarted old"
+        assert seen[-1] == ("http://127.0.0.1:8032/box/apps/restart", "POST", {"name": "old"})
+    finally:
+        panel.stop()

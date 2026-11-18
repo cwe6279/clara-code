@@ -233,6 +233,7 @@ class WebPanel:
         self.agent = None                 # errands.AgentControl when the face hands work to an agent
         self.dreams_dir: Optional[str] = None   # dream.py reports, listed on the Dreams tab
         self.boards = None                # satellite.SatelliteServer when a board is the mic and speaker
+        self.box_url = None               # () -> the Claude Code relay's address: the Box tab asks it
         self.wifi = WifiControl()
         self.calib: Dict[str, Any] = {"state": "idle", "prompt": "", "result": None, "error": ""}
         self._calib_go = threading.Event()
@@ -248,6 +249,28 @@ class WebPanel:
 
     def action(self, name: str, fn: Callable[[str], str], help: str, takes_text: bool = False) -> None:
         self.actions[name] = Action(name, fn, help, takes_text)
+
+    def _box(self, method: str, path: str, body: Optional[dict] = None):
+        """(body, code) for the Box tab: the relay runs box-app in the box."""
+        url = self.box_url() if self.box_url else ""
+        if not url:
+            return {"error": "no Claude Code relay is set (--agent-url), so the box cannot be reached"}, 200
+        from .errands import _http
+        try:
+            r = _http(url.rstrip("/") + path, method, body if method == "POST" else None, timeout=40)
+            if method == "POST" and "message" in r:
+                self.record("box", r["message"])
+            return r, 200
+        except RuntimeError as e:
+            msg = str(e)
+            if " 404 " in f" {msg} " or msg.startswith("404"):
+                msg = "the agent at this address has no box (it is not the Claude Code relay)"
+            elif msg.startswith(("400", "502")):
+                try:
+                    msg = json.loads(msg.split(":", 1)[1].split(" from ", 1)[-1].split(": ", 1)[-1]).get("error", msg)
+                except (ValueError, IndexError, AttributeError):
+                    pass
+            return {"error": msg}, 200
 
     def record(self, kind: str, text: str) -> None:
         self.events.append({"t": time.time(), "kind": kind, "text": str(text)[:400]})
@@ -323,6 +346,8 @@ class WebPanel:
                         else:
                             with open(path, encoding="utf-8") as f:
                                 self._send(200, f.read().encode(), "text/plain; charset=utf-8")
+                    elif u.path == "/api/box":
+                        self._json(*panel._box("GET", "/box/apps"))
                     elif u.path == "/api/boards":
                         self._json(panel.boards.boards() if panel.boards else {"error": "no board in use (--satellite)"})
                     elif u.path == "/api/agent":
@@ -343,7 +368,9 @@ class WebPanel:
                 except ValueError:
                     body = {}
                 try:
-                    if u.path in ("/api/boards/allow", "/api/boards/remove"):
+                    if u.path.startswith("/api/box/"):
+                        self._json(*panel._box("POST", "/box/apps/" + u.path[len("/api/box/"):], body))
+                    elif u.path in ("/api/boards/allow", "/api/boards/remove"):
                         if not panel.boards:
                             self._json({"error": "no board in use (--satellite)"})
                         else:
@@ -531,7 +558,7 @@ h2{font-size:1.05rem;margin:1.2rem 0 .6rem}#toast{position:fixed;bottom:1rem;rig
 img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 </style></head><body>
 <header><h1>Talker control</h1><span class="sub" id="who">connecting…</span><span class="sub" id="up"></span></header>
-<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="dreams">Dreams</button></nav>
+<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="box">Box</button><button data-t="dreams">Dreams</button></nav>
 <main>
 <section id="status" class="on">
   <div class="grid" id="cards"></div>
@@ -575,6 +602,16 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
   <div class="row" id="dreamlist"></div>
   <div class="log" id="dreamtext" style="max-height:none">Pick a report.</div>
 </section>
+<section id="box">
+  <p class="help">Servers Claude Code runs in its box, on ports 8100 to 8119 of this machine. Temporary ones stop by themselves after a day; kept ones stay up and come back when the box restarts. Anything on those ports that box-app did not start is stopped within the hour.</p>
+  <div id="boxoff" class="help" style="display:none"></div>
+  <div id="boxon">
+    <div class="row"><span class="help" id="boxset"></span><button class="act" onclick="box()">Refresh</button></div>
+    <h2>Servers</h2><div class="wrap"><table id="boxapps"></table></div>
+    <h2>Not started by box-app <span class="help">(stopped at the next hourly sweep unless adopted)</span></h2><div class="wrap"><table id="boxstrays"></table></div>
+    <h2>Library <span class="help">(everything Claude Code has served; stopping a server keeps its files and its entry here)</span></h2><div class="wrap"><table id="boxlib"></table></div>
+  </div>
+</section>
 <section id="boards">
   <p class="help">Which boards may connect to this machine as Clara's ears and voice. With nobody on the list, any device on your network can. A board that is not on the list is refused and shows up below, so you can let it in.</p>
   <div id="bdoff" class="help" style="display:none"></div>
@@ -608,7 +645,7 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 <div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='dreams')dreams();});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='box')box();if(b.dataset.t==='dreams')dreams();});
 async function dreams(){const r=await (await fetch('/api/dreams')).json();$('#dreamlist').innerHTML=(r.reports||[]).length?r.reports.map(n=>`<button class="act" onclick="dreamOpen('${esc(n)}')">${esc(n.replace('.md',''))}</button>`).join(''):'<span class="help">No dreams yet.</span>';if((r.reports||[]).length)dreamOpen(r.reports[0])}
 async function dreamOpen(n){const r=await fetch('/api/dreams/'+encodeURIComponent(n));$('#dreamtext').textContent=r.ok?await r.text():'could not load '+n}
 function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;clearTimeout(t._h);t._h=setTimeout(()=>t.style.opacity=0,2200)}
@@ -648,6 +685,20 @@ async function agDecide(g,ok){const r=await post('/api/agent/decide',{goal:g,app
 async function agMode(){const r=await post('/api/agent/mode',{mode:$('#agmode').value});toast(r.error||r.message)}
 async function agTest(){$('#agmsg').textContent='testing…';const r=await post('/api/agent/test',{url:$('#agurl').value});$('#agmsg').textContent=r.error||(r.ok?`reachable in ${r.ms} ms${r.running!=null?', '+r.running+' running':''}`:`not reachable: ${r.detail}`)}
 async function agSet(){const r=await post('/api/agent/set',{url:$('#agurl').value,save:true});$('#agmsg').textContent=r.error||r.message;agent(false)}
+async function box(){const r=await (await fetch('/api/box')).json();
+ if(r.error){$('#boxon').style.display='none';$('#boxoff').style.display='block';$('#boxoff').textContent=r.error;return}
+ $('#boxon').style.display='block';$('#boxoff').style.display='none';const st=r.settings||{};
+ $('#boxset').textContent=`temporary servers stop after ${st.ttl_hours} h; at most ${st.max_temporary} at once`;
+ const life=a=>a.keep?'<span class="ok">kept</span>':`temporary, ${Math.max(0,a.expires_in_h)} h left`;
+ $('#boxapps').innerHTML='<tr><th>name</th><th>address</th><th>state</th><th>lifetime</th><th>folder</th><th></th></tr>'+((r.apps||[]).length?r.apps.map(a=>`<tr><td><b>${esc(a.name)}</b></td><td><a href="http://localhost:${a.port}" target="_blank" rel="noopener">localhost:${a.port}</a></td><td class="${a.running?'ok':'bad'}">${a.running?'running':'not running'}</td><td>${life(a)}</td><td class="help">${esc(a.dir)}</td><td style="white-space:nowrap">${a.keep?`<button class="act" onclick="boxDo('unkeep',{name:'${esc(a.name)}'})">Make temporary</button>`:`<button class="act" onclick="boxDo('keep',{name:'${esc(a.name)}'})">Keep</button>`} <button class="act" onclick="boxStop('${esc(a.name)}')">Stop</button></td></tr>`).join(''):'<tr><td class="help" colspan="6">nothing running</td></tr>');
+ $('#boxstrays').innerHTML='<tr><th>address</th><th>command</th><th></th></tr>'+((r.strays||[]).length?r.strays.map(s=>`<tr><td><a href="http://localhost:${s.port}" target="_blank" rel="noopener">localhost:${s.port}</a></td><td class="help"><code>${esc(s.cmd)}</code></td><td style="white-space:nowrap"><button class="act" onclick="boxAdopt(${s.port})">Adopt</button> <button class="act" onclick="boxDo('stop-port',{port:${s.port}})">Stop</button></td></tr>`).join(''):'<tr><td class="help" colspan="3">none</td></tr>');boxLib(r)}
+function boxLib(r){const day=t=>t?new Date(t*1000).toLocaleDateString():'';
+ $('#boxlib').innerHTML='<tr><th>name</th><th>what it is</th><th>last run</th><th>runs</th><th>folder</th><th></th></tr>'+((r.library||[]).length?r.library.map(e=>`<tr><td><b>${esc(e.name)}</b></td><td>${esc(e.about||'')}</td><td>${day(e.last_started)}${e.running?' <span class="ok">running</span>':(e.why?'<div class="help">'+esc(e.why)+'</div>':'')}</td><td>${e.starts}</td><td class="help">${esc(e.dir)}${e.dir_exists?'':' <span class="bad">(gone)</span>'}</td><td style="white-space:nowrap">${e.running?'':`${e.dir_exists?`<button class="act" onclick="boxDo('restart',{name:'${esc(e.name)}'})">Start again</button> `:''}<button class="act" onclick="boxForget('${esc(e.name)}')">Forget</button>`}</td></tr>`).join(''):'<tr><td class="help" colspan="6">empty</td></tr>')}
+async function boxForget(n){if(confirm('Remove '+n+' from the library? Its files in the box are not deleted.'))boxDo('forget',{name:n})}
+async function boxDo(a,b){const r=await post('/api/box/'+a,b);toast(r.error||r.message);box()}
+async function boxStop(n){if(confirm('Stop '+n+'? It is removed from the list; Claude Code can start it again.'))boxDo('stop',{name:n})}
+async function boxAdopt(p){const n=prompt('A name for the server on port '+p+' (lowercase letters, digits, dashes):');if(n)boxDo('adopt',{name:n.trim().toLowerCase(),port:p})}
+setInterval(()=>{if($('#box').classList.contains('on'))box()},10000);
 async function boards(){const r=await (await fetch('/api/boards')).json();
  if(r.error){$('#bdon').style.display='none';$('#bdoff').style.display='block';$('#bdoff').textContent=r.error;return}
  $('#bdon').style.display='block';$('#bdoff').style.display='none';const c=r.current||{};

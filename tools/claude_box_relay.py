@@ -12,6 +12,8 @@ It speaks the talker errand protocol (version 2, see talker/errands.py):
     GET  /tasks/{id}         -> {"id", "state", "summary", "result", "question", ...}
     POST /tasks/{id}/answer  {"answer", "by"}   resumes a task that asked a question
     GET  /tasks, GET /health
+    GET  /box/apps           the servers running in the box (box-app list), for the control page
+    POST /box/apps/{stop|keep|unkeep|restart|forget|stop-port|adopt}  {"name", "port", "keep"}
 
 How a task runs:
   * Claude Code runs headless in the box (~/bin/cc-run: tmux window cc-<id>, auto
@@ -60,6 +62,8 @@ INPUT_TTL = 1800.0
 MAX_BODY = 256 * 1024              # a request body larger than this is refused
 MAX_RESULT = 20000                 # characters of a Claude Code answer that are kept
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+APP_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+BOX_PORTS = range(8100, 8120)
 SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")   # a session id goes on a command line: nothing else passes
 
 COST_RE = re.compile(r"\b(cost|costs|spent|spend|spending|bill)\b", re.I)
@@ -153,6 +157,19 @@ class BoxRunner:
                 return
             time.sleep(2)
         raise RuntimeError("the box did not start")
+
+    def box_app(self, args: list, timeout: float = 30) -> tuple:
+        """box-app in the box, for the control page. Returns (exit code, output). Does not start a
+        stopped box: looking at the list should not boot a VM."""
+        try:
+            p = subprocess.run(self.ssh() + ["box-app"] + args, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return 124, "the box did not answer"
+        out = (p.stdout or b"").decode("utf-8", "replace").strip()
+        err = (p.stderr or b"").decode("utf-8", "replace").strip()
+        if p.returncode == 255:
+            return 255, "the box is off or unreachable"
+        return p.returncode, out or err
 
     def run(self, prompt: str, model: str, budget: float, session: str, minutes: int) -> dict:
         self.ensure_up()
@@ -319,6 +336,41 @@ class Relay:
                 print(f"[relay] {tid} done: {result[:120]}")
 
 
+def box_apps(runner) -> tuple:
+    """(http code, body) for GET /box/apps."""
+    code, out = runner.box_app(["list", "--json"])
+    if code != 0:
+        return 502, {"error": out or f"box-app failed ({code})"}
+    try:
+        return 200, json.loads(out)
+    except ValueError:
+        return 502, {"error": "box-app gave no list"}
+
+
+def box_action(runner, action: str, body: dict) -> tuple:
+    """(http code, body) for POST /box/apps/<action>. Only fixed actions, a checked name and a port
+    in the owner's range reach the box's command line."""
+    name = str(body.get("name") or "").strip().lower()
+    port = body.get("port")
+    port = int(port) if str(port or "").isdigit() else 0
+    if action in ("stop", "keep", "unkeep", "restart", "forget"):
+        if not APP_NAME_RE.fullmatch(name):
+            return 400, {"error": "a server name is lowercase letters, digits and dashes"}
+        args = [action, name] + (["--keep"] if action == "restart" and body.get("keep") else [])
+    elif action == "stop-port":
+        if port not in BOX_PORTS:
+            return 400, {"error": "the port must be in 8100-8119"}
+        args = ["stop-port", str(port)]
+    elif action == "adopt":
+        if not APP_NAME_RE.fullmatch(name) or port not in BOX_PORTS:
+            return 400, {"error": "adopt needs a name (lowercase letters, digits, dashes) and a port in 8100-8119"}
+        args = ["adopt", name, str(port)] + (["--keep"] if body.get("keep") else [])
+    else:
+        return 404, {"error": "not found"}
+    code, out = runner.box_app(args)
+    return (200, {"message": out}) if code == 0 else (400 if code == 1 else 502, {"error": out})
+
+
 def _untrusted(text: str) -> str:
     """Claude Code's answer may repeat text from a web page. Clara's own tool syntax ({{task …}},
     {{tool …}}) is taken out so such text cannot be passed to her as a command, and the length
@@ -389,6 +441,8 @@ def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
                                         "features": ["needs_input", "answer", "error_kind"]})
             if path == "/tasks":
                 return self._json(200, sorted(relay.tasks.values(), key=lambda t: t["created"]))
+            if path == "/box/apps":
+                return self._json(*box_apps(relay.runner))
             if path.startswith("/tasks/"):
                 tid = path[len("/tasks/"):]
                 t = relay.get(tid)
@@ -409,6 +463,9 @@ def make_handler(relay: Relay, token: str = "", extra_host: str = ""):
             body = self._body()
             if body is None:
                 return self._json(400, {"error": "bad json"})
+            m = re.fullmatch(r"/box/apps/([a-z-]+)", path)
+            if m:
+                return self._json(*box_action(relay.runner, m.group(1), body))
             m = re.fullmatch(r"/tasks/([^/]+)/answer", path)
             if m:
                 ans = str(body.get("answer") or "").strip()
