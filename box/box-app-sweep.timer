@@ -1,0 +1,7 @@
+[Unit]
+Description=Hourly sweep of Clara's box servers
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+[Install]
+WantedBy=timers.target

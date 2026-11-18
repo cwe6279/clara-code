@@ -3,6 +3,8 @@ Description=Clara tmux session
 [Service]
 Type=forking
 ExecStart=/usr/bin/tmux new-session -d -s clara -n shell -c %h/work \; new-window -d -n activity "tail -n 200 -F %h/work/.activity.log"
+# servers kept with box-app come back; temporary ones do not survive a restart
+ExecStartPost=-/usr/local/bin/box-app boot
 ExecStop=/usr/bin/tmux kill-session -t clara
 Restart=on-failure
 [Install]

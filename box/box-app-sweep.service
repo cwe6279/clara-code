@@ -1,0 +1,6 @@
+[Unit]
+Description=Stop expired and unregistered servers in Clara's box
+[Service]
+Type=oneshot
+User=clara
+ExecStart=/usr/local/bin/box-app sweep

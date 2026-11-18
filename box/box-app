@@ -1,0 +1,325 @@
+#!/usr/bin/python3
+"""box-app: the one way to run a server in Clara's box, so none is left running unmanaged.
+
+    box-app start NAME [--keep] [--dir DIR] [--port N] -- COMMAND ...
+                                 run COMMAND in tmux window app-NAME on a free port (8100-8119).
+                                 "{port}" in COMMAND, and $PORT, are that port.
+    box-app list [--json]        what is registered, and anything else listening on those ports
+    box-app stop NAME            stop it and forget it
+    box-app stop-port PORT       stop whatever listens on PORT (registered or not)
+    box-app keep NAME            keep it: it never expires and restarts when the box boots
+    box-app unkeep NAME          make it temporary again (expires a day from now)
+    box-app adopt NAME PORT [--keep]
+                                 register a server already listening on PORT
+    box-app sweep                stop expired servers and unregistered listeners (hourly, by a timer)
+    box-app boot                 start the kept servers (when the box boots)
+
+A server is temporary unless kept: it stops 24 hours after it started. At most 5 temporary
+servers run at once; starting another stops the oldest. Settings: /etc/box-app.json
+({"ttl_hours": 24, "max_temporary": 5}). Installed root-owned in /usr/local/bin, so the
+agent cannot change how it works; its list lives in the agent's own space.
+"""
+import fcntl
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PORTS = range(8100, 8120)
+HOME = Path.home()
+STATE = HOME / ".local" / "state" / "box-app" / "apps.json"
+LOG = HOME / "work" / ".activity.log"
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+SESSION = "clara"
+
+
+def settings() -> dict:
+    s = {"ttl_hours": 24.0, "max_temporary": 5}
+    try:
+        s.update(json.loads(Path("/etc/box-app.json").read_text()))
+    except (OSError, ValueError):
+        pass
+    return s
+
+
+class Locked:
+    """The list, read and written under a lock (the sweep and Claude Code may run at once)."""
+
+    def __enter__(self):
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(STATE.with_suffix(".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        try:
+            self.apps = json.loads(STATE.read_text()).get("apps", {})
+        except (OSError, ValueError):
+            self.apps = {}
+        return self
+
+    def save(self):
+        tmp = STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"apps": self.apps}, indent=1))
+        os.replace(tmp, STATE)
+
+    def __exit__(self, *a):
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+
+
+def listeners() -> dict:
+    """port -> pid for every TCP listener of ours on 8100-8119."""
+    out = subprocess.run(["ss", "-ltnpH"], capture_output=True, text=True).stdout
+    found = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        port = parts[3].rsplit(":", 1)[-1]
+        if port.isdigit() and int(port) in PORTS:
+            m = re.search(r"pid=(\d+)", line)
+            found[int(port)] = int(m.group(1)) if m else 0
+    return found
+
+
+def windows() -> set:
+    r = subprocess.run(["tmux", "list-windows", "-t", SESSION, "-F", "#{window_name}"],
+                       capture_output=True, text=True)
+    return set(r.stdout.split()) if r.returncode == 0 else set()
+
+
+def log(msg: str) -> None:
+    try:
+        with open(LOG, "a") as f:
+            f.write(f"\033[1;35m── {time.strftime('%H:%M:%S')}  box-app: {msg}\033[0m\n")
+    except OSError:
+        pass
+
+
+def kill_pid(pid: int) -> None:
+    if pid <= 0:
+        return
+    try:
+        if os.stat(f"/proc/{pid}").st_uid != os.getuid():
+            return                                  # never anything that is not ours
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.1)
+            os.kill(pid, 0)
+        os.kill(pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def stop_app(app: dict) -> None:
+    subprocess.run(["tmux", "kill-window", "-t", f"{SESSION}:app-{app['name']}"], capture_output=True)
+    time.sleep(0.3)
+    pid = listeners().get(app["port"])
+    if pid:
+        kill_pid(pid)
+
+
+def launch(app: dict) -> None:
+    cmd = app["cmd"].replace("{port}", str(app["port"]))
+    inner = f"export PORT={app['port']} PATH=$HOME/venv/bin:$HOME/.local/bin:$PATH; cd {shlex.quote(app['dir'])} && exec {cmd}"
+    subprocess.run(["tmux", "kill-window", "-t", f"{SESSION}:app-{app['name']}"], capture_output=True)
+    subprocess.run(["tmux", "new-window", "-d", "-t", SESSION, "-n", f"app-{app['name']}", inner], check=True)
+
+
+def free_port(apps: dict) -> int:
+    taken = set(listeners()) | {a["port"] for a in apps.values()}
+    for p in PORTS:
+        if p not in taken:
+            return p
+    raise SystemExit("no free port in 8100-8119: stop something first (box-app list)")
+
+
+def status(apps: dict) -> list:
+    live, wins, now = listeners(), windows(), time.time()
+    rows = []
+    for a in sorted(apps.values(), key=lambda a: a["port"]):
+        running = a["port"] in live
+        rows.append(dict(a, running=running, window=f"app-{a['name']}" in wins,
+                         expires_in_h=None if a["keep"] else round((a["expires"] - now) / 3600, 1)))
+    known = {a["port"] for a in apps.values()}
+    strays = [{"port": p, "pid": pid, "cmd": cmdline(pid)} for p, pid in sorted(live.items()) if p not in known]
+    return rows, strays
+
+
+def cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()[:200]
+    except OSError:
+        return ""
+
+
+def need_name(n: str) -> str:
+    n = n.lower()
+    if not NAME_RE.fullmatch(n):
+        raise SystemExit("a name is lowercase letters, digits and dashes, up to 32 characters")
+    return n
+
+
+def main(argv: list) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    cmd, rest, cfg = argv[0], argv[1:], settings()
+    ttl = float(cfg["ttl_hours"]) * 3600
+
+    if cmd == "start":
+        if "--" not in rest:
+            raise SystemExit("usage: box-app start NAME [--keep] [--dir DIR] [--port N] -- COMMAND ...")
+        i = rest.index("--")
+        opts, command = rest[:i], rest[i + 1:]
+        if not opts or not command:
+            raise SystemExit("usage: box-app start NAME [--keep] [--dir DIR] [--port N] -- COMMAND ...")
+        name, keep, d, port = need_name(opts[0]), "--keep" in opts, os.getcwd(), None
+        if "--dir" in opts:
+            d = os.path.abspath(os.path.expanduser(opts[opts.index("--dir") + 1]))
+        if "--port" in opts:
+            port = int(opts[opts.index("--port") + 1])
+            if port not in PORTS:
+                raise SystemExit("the port must be in 8100-8119: only those reach the owner")
+        with Locked() as st:
+            if name in st.apps:
+                stop_app(st.apps.pop(name))
+            if port is not None and (port in listeners() or port in {a["port"] for a in st.apps.values()}):
+                raise SystemExit(f"port {port} is in use (box-app list)")
+            port = port or free_port(st.apps)
+            now = time.time()
+            app = {"name": name, "port": port, "dir": d, "cmd": shlex.join(command) if len(command) > 1 else command[0],
+                   "keep": keep, "started": now, "expires": now + ttl}
+            temp = sorted((a for a in st.apps.values() if not a["keep"]), key=lambda a: a["started"])
+            while not keep and len(temp) >= int(cfg["max_temporary"]):
+                old = temp.pop(0)
+                stop_app(st.apps.pop(old["name"]))
+                log(f"stopped {old['name']} (port {old['port']}) to stay within {cfg['max_temporary']} temporary servers")
+                print(f"stopped the oldest temporary server, {old['name']}, to make room")
+            launch(app)
+            st.apps[name] = app
+            st.save()
+        for _ in range(30):
+            if port in listeners():
+                break
+            time.sleep(0.2)
+        up = port in listeners()
+        log(f"started {name} on port {port} ({'kept' if keep else 'temporary'})")
+        print(f"{name}: http://localhost:{port} on the owner's computer, tmux window app-{name}. "
+              + ("Kept: it restarts when the box boots." if keep else
+                 f"Temporary: it stops in {cfg['ttl_hours']:g} hours unless kept (box-app keep {name}).")
+              + ("" if up else " It is not answering yet; check the window."))
+        return 0 if up else 1
+
+    if cmd == "list":
+        with Locked() as st:
+            rows, strays = status(st.apps)
+        if "--json" in rest:
+            print(json.dumps({"apps": rows, "strays": strays, "settings": cfg}))
+            return 0
+        for r in rows:
+            life = "kept" if r["keep"] else f"temporary, {max(r['expires_in_h'], 0):g} h left"
+            print(f"{r['name']:<20} :{r['port']}  {'running' if r['running'] else 'NOT RUNNING'}  {life}  {r['dir']}")
+        for s in strays:
+            print(f"{'(unregistered)':<20} :{s['port']}  pid {s['pid']}  {s['cmd']}")
+        if not rows and not strays:
+            print("nothing running")
+        return 0
+
+    if cmd in ("stop", "keep", "unkeep"):
+        if not rest:
+            raise SystemExit(f"usage: box-app {cmd} NAME")
+        name = need_name(rest[0])
+        with Locked() as st:
+            app = st.apps.get(name)
+            if not app:
+                raise SystemExit(f"no server named {name} (box-app list)")
+            if cmd == "stop":
+                stop_app(st.apps.pop(name))
+                msg = f"stopped {name}"
+            elif cmd == "keep":
+                app["keep"] = True
+                msg = f"kept {name}: it stays up and restarts when the box boots"
+            else:
+                app["keep"], app["expires"] = False, time.time() + ttl
+                msg = f"{name} is temporary again: it stops in {cfg['ttl_hours']:g} hours"
+            st.save()
+        log(msg)
+        print(msg)
+        return 0
+
+    if cmd == "stop-port":
+        port = int(rest[0]) if rest and rest[0].isdigit() else 0
+        if port not in PORTS:
+            raise SystemExit("usage: box-app stop-port PORT (8100-8119)")
+        with Locked() as st:
+            for n, a in list(st.apps.items()):
+                if a["port"] == port:
+                    stop_app(st.apps.pop(n))
+                    st.save()
+            pid = listeners().get(port)
+            if pid:
+                kill_pid(pid)
+        log(f"stopped whatever was on port {port}")
+        print(f"port {port} stopped")
+        return 0
+
+    if cmd == "adopt":
+        if len(rest) < 2 or not rest[1].isdigit():
+            raise SystemExit("usage: box-app adopt NAME PORT [--keep]")
+        name, port = need_name(rest[0]), int(rest[1])
+        pid = listeners().get(port)
+        if not pid:
+            raise SystemExit(f"nothing of ours listens on port {port}")
+        try:
+            d = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            d = str(HOME / "work")
+        now = time.time()
+        with Locked() as st:
+            st.apps[name] = {"name": name, "port": port, "dir": d, "cmd": cmdline(pid), "keep": "--keep" in rest,
+                             "started": now, "expires": now + ttl}
+            st.save()
+        log(f"adopted {name} on port {port}")
+        print(f"adopted {name} on port {port}" + (" (kept)" if "--keep" in rest else f" (temporary, {cfg['ttl_hours']:g} h)"))
+        return 0
+
+    if cmd == "sweep":
+        now, done = time.time(), []
+        with Locked() as st:
+            for n, a in list(st.apps.items()):
+                if not a["keep"] and a["expires"] <= now:
+                    stop_app(st.apps.pop(n))
+                    done.append(f"expired {n} (port {a['port']})")
+            known = {a["port"] for a in st.apps.values()}
+            for port, pid in listeners().items():
+                if port not in known:
+                    kill_pid(pid)
+                    done.append(f"stopped an unregistered server on port {port}")
+            st.save()
+        for d in done:
+            log(d)
+            print(d)
+        return 0
+
+    if cmd == "boot":
+        with Locked() as st:
+            live = listeners()
+            for a in st.apps.values():
+                if a["keep"] and a["port"] not in live:
+                    launch(a)
+                    log(f"restarted kept server {a['name']} on port {a['port']}")
+            gone = [n for n, a in st.apps.items() if not a["keep"]]
+            for n in gone:                           # temporary ones do not survive a restart
+                st.apps.pop(n)
+            st.save()
+        return 0
+
+    raise SystemExit(f"unknown command {cmd!r}; box-app --help")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

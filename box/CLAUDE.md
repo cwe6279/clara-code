@@ -34,14 +34,17 @@ reads your final answer and tells the owner in her own words, out loud.
 
 ## Web pages and servers the owner should open
 
-- The box is closed to the outside. Only ports 8100 to 8119 are reachable, and only from the
-  owner's desktop, as http://localhost:PORT. Never give a 192.168 address or any other port:
-  they do not lead to the box.
-- Pick a free port in that range (check with `ss -ltn`), bind to 0.0.0.0, and start the server
-  in its own tmux window so it keeps running and the owner can see it:
-  `tmux new-window -d -t clara -n app-NAME "cd ~/work/NAME && python3 -m http.server 8101"`
-- Check it answers (`curl -s localhost:PORT`), then tell the owner the localhost address.
-  Say that it stops if the box restarts.
+- Start every server with `box-app`, never with tmux, nohup or `&` yourself: anything on the
+  owner's ports that box-app did not start is stopped within the hour.
+  `box-app start NAME --dir ~/work/NAME -- python3 -m http.server {port} --bind 0.0.0.0`
+  It picks a free port in 8100-8119 (`{port}` and `$PORT` are that port) and runs it in tmux
+  window app-NAME. Bind to 0.0.0.0.
+- Servers are temporary: each stops 24 hours after it starts, and at most 5 run at once
+  (starting a sixth stops the oldest). Run `box-app keep NAME` only when the owner asks to keep
+  it. `box-app list` shows what runs; `box-app stop NAME` stops one.
+- The owner opens it as http://localhost:PORT on their own computer. Never give a 192.168
+  address or another port: they do not lead to the box. Say whether it is temporary or kept.
+- Don't make a page refresh itself more often than it needs to: an open tab keeps fetching.
 
 ## Housekeeping
 

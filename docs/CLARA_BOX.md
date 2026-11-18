@@ -116,15 +116,32 @@ off and attaches tmux session `clara`:
 - window `shell`: a shell as `clara`, for you;
 - window `activity`: one line per job as it starts;
 - windows `cc-<id>`: a Claude Code job, live (text and tool calls; closes 10 minutes after it ends);
-- windows `app-<name>`: servers Claude Code started.
+- windows `app-<name>`: servers Claude Code started with `box-app`.
 
 `Ctrl-b 0/1/n` switches windows, `Ctrl-b d` detaches (the session keeps running).
 
 ## Pages the box serves
 
-A server started in the box on ports 8100 to 8119 is at `http://localhost:PORT` on the host.
-`box/CLAUDE.md` tells Claude Code to use that range, to run each server in its own tmux window,
-and to give the localhost address. Servers stop when the box restarts.
+A server in the box on ports 8100 to 8119 is at `http://localhost:PORT` on the host. Every such
+server goes through `box-app` (root-owned, `/usr/local/bin/box-app`), so none is left running
+without anyone knowing:
+
+- `box-app start NAME -- COMMAND` picks a free port and runs it in tmux window `app-NAME`.
+- **Temporary by default:** a server stops 24 hours after it starts. At most 5 temporary ones
+  run at once; starting another stops the oldest.
+- **Kept** (`box-app keep NAME`): never expires, and restarts when the box boots. Temporary
+  ones do not survive a restart.
+- **Swept hourly** by a root timer (`box-app-sweep.timer`): expired servers, and anything on
+  those ports that box-app did not start, are stopped.
+- `box-app list` shows what runs; `box-app stop NAME` and `box-app stop-port PORT` stop one.
+
+Settings are in `/etc/box-app.json` (`ttl_hours`, `max_temporary`), owned by root. `box/CLAUDE.md`
+tells Claude Code to use box-app, to keep a server only when you ask, and to give the localhost
+address. The list itself lives in `clara`'s space (`~/.local/state/box-app/`), so Claude Code
+could mark its own server as kept; you would see it in `box-app list`.
+
+An idle server uses no network. An open browser tab does: a page that refreshes itself keeps
+fetching while it is open.
 
 ## What is installed
 
@@ -170,6 +187,10 @@ NET
 sudo chmod 600 /etc/netplan/50-cloud-init.yaml && sudo netplan apply
 sudo mkdir -p /workspace && sudo ln -sfn /home/clara/work /workspace/agent
 sudo loginctl enable-linger clara
+sudo install -m 755 box-app /usr/local/bin/        # copied in with scp first, as admin
+sudo install -m 644 box-app-sweep.service box-app-sweep.timer /etc/systemd/system/
+echo '{"ttl_hours": 24, "max_temporary": 5}' | sudo tee /etc/box-app.json
+sudo systemctl daemon-reload && sudo systemctl enable --now box-app-sweep.timer
 python3 -m venv /tmp/pw && /tmp/pw/bin/pip install playwright && sudo /tmp/pw/bin/playwright install-deps chromium
 ```
 
