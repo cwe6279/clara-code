@@ -44,7 +44,7 @@ would also need a rule for it.
 
 **Host:** a Linux machine that stays on (developed on Fedora; see [Hardware](#hardware) for WSL2).
 
-- Python 3.10 or newer (developed on 3.15).
+- Python 3.10 or newer (developed on 3.13).
 - For the voice host: `ffmpeg`, the PortAudio headers and `libopus`.
 - For the box: KVM (CPU virtualization turned on in the BIOS), libvirt with the QEMU driver,
   `passt` (the VM's user-mode network), `qemu-img` and `genisoimage`. About 4 GB of free disk
