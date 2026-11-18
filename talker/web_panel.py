@@ -760,6 +760,14 @@ table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{text-align:left;
 th{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--mute)}.wrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px}
 select,input[type=number],input[type=text],input[type=password]{font:inherit;padding:.3rem .5rem;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--ink);width:9rem}
 a.act,label.act{display:inline-block;text-decoration:none;line-height:normal}
+.explorer{display:grid;grid-template-columns:15rem minmax(0,1fr);gap:1.4rem;align-items:start}
+@media(max-width:760px){.explorer{grid-template-columns:minmax(0,1fr)}.exside{border-right:0!important;border-bottom:1px solid var(--line);padding-bottom:.6rem}}
+.exside{border-right:1px solid var(--line);padding-right:.8rem;position:sticky;top:.5rem}
+.exhead{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--mute);margin:1rem 0 .3rem}.exhead:first-child{margin-top:0}
+.exitem{display:block;padding:.38rem .55rem;border-radius:6px;cursor:pointer;color:var(--ink);text-decoration:none}
+.exitem:hover{background:var(--panel)}.exitem.on{background:var(--panel);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}
+.extree a{display:block;padding:.22rem .55rem;border-radius:5px;font-size:.88rem;color:var(--ink);text-decoration:none;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.extree a:hover{background:var(--panel)}.extree a.on{font-weight:600;color:var(--accent)}
 button.act,a.act,label.act{font:inherit;padding:.4rem .8rem;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer}
 button.act.primary,a.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .help{color:var(--mute);font-size:.84rem}.q{display:inline-block;width:1.1em;height:1.1em;border-radius:50%;border:1px solid var(--mute);color:var(--mute);font-size:.7em;text-align:center;line-height:1.1em;margin-left:.3em;cursor:help}
@@ -769,7 +777,7 @@ h2{font-size:1.05rem;margin:1.2rem 0 .6rem}#toast{position:fixed;bottom:1rem;rig
 img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 </style></head><body>
 <header><h1>Talker control</h1><span class="sub" id="who">connecting…</span><span class="sub" id="up"></span></header>
-<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="box">Box</button><button data-t="files">Files</button><button data-t="dreams">Dreams</button></nav>
+<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="files">Box &amp; files</button><button data-t="dreams">Dreams</button></nav>
 <main>
 <section id="status" class="on">
   <div class="grid" id="cards"></div>
@@ -814,26 +822,39 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
   <div class="log" id="dreamtext" style="max-height:none">Pick a report.</div>
 </section>
 <section id="files">
-  <p class="help">Her photos and scans and her session logs (what was said, so treat them as private) on this computer, and everything in Claude Code's box (its workspace, <code>~/work</code>). Files open here as pictures or plain text; pages from the box are shown as their source, never run. Deleting moves things to a trash you can recover from.</p>
-  <div class="row"><button class="act" id="flcap" onclick="flWhere('captures')">Captures</button><button class="act" id="flbox" onclick="flWhere('box')">Box workspace</button><button class="act" id="fllogs" onclick="flWhere('logs')">Logs</button>
-    <span style="flex:1"></span><button class="act" onclick="flLoad()">Refresh</button><button class="act" onclick="flMkdir()">New folder</button>
-    <label class="act" id="flupl" style="cursor:pointer">Upload…<input type="file" multiple style="display:none" onchange="flUpload(this)"></label>
-    <button class="act" id="flempty" onclick="flEmpty()">Empty box trash</button></div>
-  <div class="row" id="flcrumbs"></div>
-  <div id="flusage" class="help"></div>
-  <div id="flmsg" class="help"></div>
-  <div class="wrap"><table id="fltable"></table></div>
-  <div id="flprev" style="margin-top:1rem"></div>
-</section>
-<section id="box">
-  <p class="help">Servers Claude Code runs in its box, on ports 8100 to 8119 of this machine. Temporary ones stop by themselves after a day; kept ones stay up and come back when the box restarts. Anything on those ports that box-app did not start is stopped within the hour.</p>
-  <div id="boxoff" class="help" style="display:none"></div>
+ <div class="explorer">
+  <aside class="exside">
+    <div class="exhead">On this computer</div>
+    <a class="exitem" id="ex-captures" onclick="flWhere('captures')">📷 Captures</a>
+    <a class="exitem" id="ex-logs" onclick="flWhere('logs')">🗒 Logs</a>
+    <div class="exhead">Claude Code's box</div>
+    <a class="exitem" id="ex-box" onclick="flWhere('box')">📁 Workspace</a>
+    <a class="exitem" id="ex-servers" onclick="exServers()">🌐 Servers &amp; library</a>
+    <div id="exusage" class="help" style="margin-top:1rem"></div>
+    <div id="extree" class="extree"></div>
+  </aside>
+  <div class="exmain">
+   <div id="exfiles">
+    <p class="help" id="exhelp"></p>
+    <div class="row"><span id="flcrumbs"></span><span style="flex:1"></span><button class="act" onclick="flLoad()">Refresh</button><button class="act" onclick="flMkdir()">New folder</button>
+      <label class="act" id="flupl" style="cursor:pointer">Upload…<input type="file" multiple style="display:none" onchange="flUpload(this)"></label>
+      <button class="act" id="flempty" onclick="flEmpty()">Empty box trash</button></div>
+    <div id="flmsg" class="help"></div>
+    <div class="wrap"><table id="fltable"></table></div>
+    <div id="flprev" style="margin-top:1rem"></div>
+   </div>
+   <div id="exservers" style="display:none">
+    <p class="help">Servers Claude Code runs in its box, on ports 8100 to 8119 of this machine. Temporary ones stop by themselves after a day; kept ones stay up and come back when the box restarts. Anything on those ports that box-app did not start is stopped within the hour.</p>
+    <div id="boxoff" class="help" style="display:none"></div>
   <div id="boxon">
     <div class="row"><span class="help" id="boxset"></span><button class="act" onclick="box()">Refresh</button></div>
     <h2>Servers</h2><div class="wrap"><table id="boxapps"></table></div>
     <h2>Not started by box-app <span class="help">(stopped at the next hourly sweep unless adopted)</span></h2><div class="wrap"><table id="boxstrays"></table></div>
     <h2>Library <span class="help">(everything Claude Code has served; stopping a server keeps its files and its entry here)</span></h2><div class="wrap"><table id="boxlib"></table></div>
   </div>
+   </div>
+  </div>
+ </div>
 </section>
 <section id="boards">
   <p class="help">Which boards may connect to this machine as Clara's ears and voice. With nobody on the list, any device on your network can. A board that is not on the list is refused and shows up below, so you can let it in.</p>
@@ -868,7 +889,7 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 <div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='box')box();if(b.dataset.t==='files')flLoad();if(b.dataset.t==='dreams')dreams();});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='files'){if($('#exservers').style.display==='none')flLoad();else box();flUsage()}if(b.dataset.t==='dreams')dreams();});
 async function dreams(){const r=await (await fetch('/api/dreams')).json();$('#dreamlist').innerHTML=(r.reports||[]).length?r.reports.map(n=>`<button class="act" onclick="dreamOpen('${esc(n)}')">${esc(n.replace('.md',''))}</button>`).join(''):'<span class="help">No dreams yet.</span>';if((r.reports||[]).length)dreamOpen(r.reports[0])}
 async function dreamOpen(n){const r=await fetch('/api/dreams/'+encodeURIComponent(n));$('#dreamtext').textContent=r.ok?await r.text():'could not load '+n}
 function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;clearTimeout(t._h);t._h=setTimeout(()=>t.style.opacity=0,2200)}
@@ -919,27 +940,36 @@ const FL={where:'box',path:''};
 function flSize(n){return n==null?'':n<1024?n+' B':n<1048576?(n/1024).toFixed(0)+' KB':(n/1048576).toFixed(1)+' MB'}
 function flJoin(a,b){return a?a+'/'+b:b}
 function flRaw(p,dl){return `/api/files/raw?where=${FL.where}&path=${encodeURIComponent(p)}${dl?'&download=1':''}&t=${Date.now()}`}
-function flWhere(w){FL.where=w;FL.path='';$('#flprev').innerHTML='';flLoad()}
-async function flLoad(){$('#flcap').className='act'+(FL.where==='captures'?' primary':'');$('#flbox').className='act'+(FL.where==='box'?' primary':'');$('#fllogs').className='act'+(FL.where==='logs'?' primary':'');
+const EXHELP={captures:'Her photos and scans, each with what she saw in it. Deleting moves them to the desktop Trash.',
+ logs:'Her session logs: what was said, so treat them as private. The log of the session running now cannot be deleted until a restart.',
+ box:'Everything in Claude Code\'s box (~/work). Files open as pictures or plain text; pages from the box are shown as their source, never run. Deleting moves them to the box trash.'};
+function exMark(id){document.querySelectorAll('.exitem').forEach(x=>x.classList.toggle('on',x.id===id))}
+function exServers(){$('#exfiles').style.display='none';$('#exservers').style.display='';exMark('ex-servers');$('#extree').innerHTML='';box()}
+function flWhere(w){FL.where=w;FL.path='';$('#flprev').innerHTML='';$('#exfiles').style.display='';$('#exservers').style.display='none';flLoad()}
+function exTree(dirs){const t=$('#extree');const item=$('#ex-'+FL.where);item.after(t);
+ const parts=FL.path?FL.path.split('/'):[];let acc='',html='';
+ parts.forEach((p,i)=>{acc=flJoin(acc,p);const a=acc;html+=`<a style="padding-left:${.55+(i+1)*.8}rem" class="${a===FL.path?'on':''}" onclick="flGo('${esc(a).replace(/'/g,"\\'")}')">📂 ${esc(p)}</a>`});
+ html+=dirs.map(d=>{const a=flJoin(FL.path,d);return `<a style="padding-left:${.55+(parts.length+1)*.8}rem" onclick="flGo('${esc(a).replace(/'/g,"\\'")}')">📁 ${esc(d)}</a>`}).join('');t.innerHTML=html}
+function flGo(p){FL.path=p;$('#flprev').innerHTML='';flLoad()}
+async function flLoad(){exMark('ex-'+FL.where);$('#exhelp').textContent=EXHELP[FL.where]||'';
  $('#flupl').style.display=$('#flempty').style.display=FL.where==='box'?'':'none';$('#flmsg').textContent='loading…';
  const r=await (await fetch(`/api/files?where=${FL.where}&path=${encodeURIComponent(FL.path)}`)).json();
  if(r.error){$('#flmsg').textContent=r.error;$('#fltable').innerHTML='';return}
- $('#flmsg').textContent=r.entries.length?'':'empty';FL.path=r.path||'';flUsage();
+ $('#flmsg').textContent=r.entries.length?'':'empty';FL.path=r.path||'';exTree(r.entries.filter(e=>e.type==='dir').map(e=>e.name));
  const parts=FL.path?FL.path.split('/'):[];let acc='';
  $('#flcrumbs').innerHTML=`<a href="#" onclick="FL.path='';flLoad();return false">${FL.where==='box'?'~/work':FL.where}</a>`+parts.map(p=>{acc=flJoin(acc,p);const a=acc;return ` / <a href="#" onclick="FL.path='${esc(a)}';flLoad();return false">${esc(p)}</a>`}).join('');
  $('#fltable').innerHTML='<tr><th>name</th><th>size</th><th>modified</th><th></th></tr>'+r.entries.map(e=>{const p=flJoin(FL.path,e.name);const ep=esc(p).replace(/'/g,"\\'");
   const open=e.type==='dir'?`<a href="#" onclick="FL.path='${ep}';$('#flprev').innerHTML='';flLoad();return false">📁 ${esc(e.name)}</a>`:`<a href="#" onclick="flShow('${ep}');return false">${esc(e.name)}</a>`;
   return `<tr><td>${open}${e.type==='link'?' <span class="help">(link)</span>':''}${e.in_use?' <span class="help">(this session, still being written)</span>':''}</td><td>${flSize(e.size)}</td><td class="help">${new Date(e.modified*1000).toLocaleString()}</td><td style="white-space:nowrap">${e.type==='file'?`<a class="act" href="${flRaw(p,true)}">Download</a> `:''}<button class="act" onclick="flRename('${ep}','${esc(e.name).replace(/'/g,"\\'")}')">Rename</button> <button class="act" onclick="flTrash('${ep}')">Delete</button></td></tr>`}).join('')}
-async function flUsage(){if(FL.where!=='box'){$('#flusage').textContent='';return}
- const u=await post('/api/files/usage',{where:'box'});if(u.error){$('#flusage').textContent='';return}
+async function flUsage(){const u=await post('/api/files/usage',{where:'box'});if(u.error){$('#exusage').textContent='';return}
  const g=n=>(n/1073741824).toFixed(1)+' GB';const used=u.disk_total-u.disk_free;const pct=Math.round(100*used/u.disk_total);
- $('#flusage').innerHTML=`Box disk: <b class="${pct>85?'bad':pct>70?'warn':''}">${g(used)} of ${g(u.disk_total)} used (${pct}%)</b> · workspace ${flSize(u.work)} · box trash ${flSize(u.trash)}`+(u.host_vm!=null?` · on this computer the VM takes ${g(u.host_vm)}, ${g(u.host_free)} free`:'')}
+ $('#exusage').innerHTML=`<div class="exhead">Box disk</div><b class="${pct>85?'bad':pct>70?'warn':''}">${g(used)} of ${g(u.disk_total)} (${pct}%)</b><br>workspace ${flSize(u.work)}<br>box trash ${flSize(u.trash)}`+(u.host_vm!=null?`<br>on this computer: ${g(u.host_vm)}, ${g(u.host_free)} free`:'')}
 async function flShow(p){const b=$('#flprev');const ext=(p.split('.').pop()||'').toLowerCase();
  if(['png','jpg','jpeg','gif','webp'].includes(ext)){b.innerHTML=`<h2>${esc(p)}</h2><img class="snap" src="${flRaw(p)}">`;return}
  const r=await fetch(flRaw(p));if(!r.ok){b.innerHTML='<span class="help">'+esc((await r.json()).error||'could not open it')+'</span>';return}
  const ct=r.headers.get('Content-Type')||'';if(!ct.startsWith('text/')){b.innerHTML=`<h2>${esc(p)}</h2><span class="help">No preview for this kind of file. </span><a class="act" href="${flRaw(p,true)}">Download</a>`;return}
  let t=await r.text();const cut=t.length>300000;if(cut)t=t.slice(0,300000);b.innerHTML=`<h2>${esc(p)}</h2>`;const pre=document.createElement('div');pre.className='log';pre.style.maxHeight='40rem';pre.textContent=t+(cut?'\n… (cut; download for the rest)':'');b.appendChild(pre)}
-async function flTrash(p){if(!confirm('Delete '+p+'? It goes to '+(FL.where==='box'?'the box trash (~/work/.trash)':'the desktop Trash')+'.'))return;const r=await post('/api/files/trash',{where:FL.where,path:p});toast(r.error||r.message);$('#flprev').innerHTML='';flLoad()}
+async function flTrash(p){setTimeout(flUsage,800);if(!confirm('Delete '+p+'? It goes to '+(FL.where==='box'?'the box trash (~/work/.trash)':'the desktop Trash')+'.'))return;const r=await post('/api/files/trash',{where:FL.where,path:p});toast(r.error||r.message);$('#flprev').innerHTML='';flLoad()}
 async function flRename(p,old){const n=prompt('New name for '+old+':',old);if(!n||n===old)return;const r=await post('/api/files/rename',{where:FL.where,path:p,name:n});toast(r.error||r.message);flLoad()}
 async function flMkdir(){const n=prompt('Name of the new folder:');if(!n)return;const r=await post('/api/files/mkdir',{where:FL.where,path:FL.path,name:n});toast(r.error||r.message);flLoad()}
 async function flEmpty(){if(!confirm('Empty the box trash? Those files are deleted for good.'))return;const r=await post('/api/files/empty-trash',{where:'box'});toast(r.error||r.message);flLoad()}
@@ -953,7 +983,7 @@ async function boxForget(n){if(confirm('Remove '+n+' from the library? Its files
 async function boxDo(a,b){const r=await post('/api/box/'+a,b);toast(r.error||r.message);box()}
 async function boxStop(n){if(confirm('Stop '+n+'? It is removed from the list; Claude Code can start it again.'))boxDo('stop',{name:n})}
 async function boxAdopt(p){const n=prompt('A name for the server on port '+p+' (lowercase letters, digits, dashes):');if(n)boxDo('adopt',{name:n.trim().toLowerCase(),port:p})}
-setInterval(()=>{if($('#box').classList.contains('on'))box()},10000);
+setInterval(()=>{if($('#files').classList.contains('on')&&$('#exservers').style.display!=='none')box()},10000);
 async function boards(){const r=await (await fetch('/api/boards')).json();
  if(r.error){$('#bdon').style.display='none';$('#bdoff').style.display='block';$('#bdoff').textContent=r.error;return}
  $('#bdon').style.display='block';$('#bdoff').style.display='none';const c=r.current||{};
