@@ -56,9 +56,11 @@ would also need a rule for it.
    python tools/claude_box_relay.py &
    python voice_loop.py --face clara --satellite --no-window --agent-url http://127.0.0.1:8032
    ```
-5. **Lock it to your board.** When the board first checks in, the host prints its id. Put it in
-   `.env` as `SATELLITE_ALLOW=<id>` (or pass `--satellite-allow`) and restart, so no other
-   device on your network can talk to Clara.
+5. **Lock it to your board.** Open the control page (http://localhost:8020), go to **Boards**,
+   and press **Allow only this board**. From then on every other device on your network is
+   refused. A new board you add later shows up under **Refused**; press **Allow** next to it.
+   Boards allowed on the page are saved in `settings.json`. You can also list them in `.env` as
+   `SATELLITE_ALLOW=<id>,<id>` (or `--satellite-allow`); those can only be removed there.
 
 ## Using it
 

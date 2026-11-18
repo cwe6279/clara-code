@@ -91,13 +91,15 @@ The box limits what Claude Code can touch. These limit who can give it work:
 Known limits, by design:
 
 - **Without an allow-list, anyone on your network can talk to Clara.** The board's port (8030)
-  is open to the LAN so the board can reach it. Set `SATELLITE_ALLOW` in `.env` (or
-  `--satellite-allow`) to your board's Client-Id, which the host prints when the board checks
-  in; other devices are then refused and logged. The id travels unencrypted on your network, so
+  is open to the LAN so the board can reach it. Turn the allow-list on from the control page's
+  **Boards** tab ("Allow only this board"), or set `SATELLITE_ALLOW` in `.env` to your board's
+  Client-Id. Other devices are then refused, logged, and listed on that tab to allow or ignore. The id travels unencrypted on your network, so
   this keeps out other devices, not someone able to capture your Wi-Fi traffic. A MAC address
   (Device-Id) also works but is easier to copy.
 - **The control page has no password.** It stays on this machine unless you pass
-  `--web-host 0.0.0.0`, which opens settings, the camera snapshot and Wi-Fi joining to the LAN.
+  `--web-host 0.0.0.0`, which opens settings, the camera snapshot, Wi-Fi joining and the board
+  allow-list to the LAN. It refuses requests made by other web pages (form posts, other
+  origins, a foreign `Host`), so a site open in your browser cannot use it.
 - **A web page can mislead Claude Code.** It runs in auto mode and reads the web, so text on a
   page can steer it. Inside the box that can waste money, read the box's API key or change the
   box's own files (including `cc-run` and the costs it reports). It cannot reach your computer

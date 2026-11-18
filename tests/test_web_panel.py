@@ -128,3 +128,57 @@ def test_a_face_name_is_found_whatever_its_case(capsys):
     assert resolve_face_dir("no-such-face", None) is None
     out = capsys.readouterr().out
     assert "no face called 'no-such-face'" in out and "theboard" in out    # lists what exists
+
+
+def test_other_pages_cannot_post_or_read():
+    """No password on this page, so a site open in the browser must not be able to use it."""
+    import http.client
+    hits = []
+    panel = WebPanel(port=0, host="127.0.0.1")
+    panel.action("speak", lambda t: (hits.append(t), "ok")[1], "say it", takes_text=True)
+    panel.start()
+
+    def call(method, path, headers, body=None):
+        c = http.client.HTTPConnection("127.0.0.1", panel.port, timeout=5)
+        c.request(method, path, body=body, headers=headers)
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r.status
+    b = json.dumps({"name": "speak", "text": "hi"})
+    try:
+        assert call("POST", "/api/action", {"Content-Type": "text/plain"}, b) == 403            # a form post
+        assert call("POST", "/api/action", {"Content-Type": "application/json",
+                                            "Origin": "http://evil.example"}, b) == 403
+        assert call("GET", "/api/state", {"Host": "evil.example"}) == 403                        # DNS rebinding
+        assert not hits
+        assert call("POST", "/api/action", {"Content-Type": "application/json",
+                                            "Origin": f"http://127.0.0.1:{panel.port}"}, b) == 200   # the page itself
+        assert hits == ["hi"]
+    finally:
+        panel.stop()
+
+
+def test_boards_tab_allows_a_refused_board_and_saves_it(tmp_path):
+    from talker.satellite import SatelliteServer
+    saved = []
+    sat = SatelliteServer(host="127.0.0.1", port=0, allow=["aaaa-1111"], on_event=lambda k, t: None)
+    sat.locked_ids = {"aaaa-1111"}
+    sat.on_allow_change = saved.append
+    sat.refused["bbbb-2222"] = {"client": "bbbb-2222", "mac": "de:ad", "ip": "10.0.0.9", "seen": 1.0, "count": 3}
+    panel = WebPanel(port=0, host="127.0.0.1")
+    panel.boards = sat
+    panel.start()
+    base = f"http://127.0.0.1:{panel.port}"
+    try:
+        r = json.loads(_get(base + "/api/boards")[2])
+        assert not r["open"] and r["refused"][0]["id"] == "bbbb-2222" and r["allowed"][0]["locked"]
+        r = _post(base + "/api/boards/allow", {"id": "bbbb-2222"})
+        assert {a["id"] for a in r["allowed"]} == {"aaaa-1111", "bbbb-2222"} and not r["refused"]
+        assert saved[-1] == ["bbbb-2222"]                       # only the page-added one is saved
+        assert "error" in _post(base + "/api/boards/remove", {"id": "aaaa-1111"})   # from .env: not here
+        assert "error" in _post(base + "/api/boards/allow", {"id": "<script>"})
+        r = _post(base + "/api/boards/remove", {"id": "bbbb-2222"})
+        assert [a["id"] for a in r["allowed"]] == ["aaaa-1111"] and saved[-1] == []
+    finally:
+        panel.stop()

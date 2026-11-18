@@ -463,6 +463,7 @@ def test_allow_list_keeps_other_devices_out():
     asyncio.run(go())
     assert any("refused a device" in t and "de:ad:be:ef:00:01" in t for _, t in events)
     assert not any("may connect" in t for _, t in events)
+    assert srv.refused["someone-else"]["mac"] == "de:ad:be:ef:00:01" and srv.boards()["refused"]
 
 
 def test_board_id_is_noted_from_a_reconnect_without_check_in(server):

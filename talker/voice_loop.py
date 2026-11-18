@@ -1469,6 +1469,10 @@ def main(argv=None) -> int:
                                     advertise_host=args.satellite_advertise,
                                     firmware=args.satellite_firmware, volume=args.satellite_volume,
                                     allow=(args.satellite_allow or os.environ.get("SATELLITE_ALLOW", "")).split(","))
+        from . import local_settings
+        satellite.locked_ids = set(satellite.allow)            # from .env / the flag: edit them there
+        satellite.allow |= {str(a).lower() for a in local_settings.load().get("satellite_allow", []) if str(a).strip()}
+        satellite.on_allow_change = lambda ids: local_settings.save("satellite_allow", ids or None)
         try:
             audio = SatelliteAudioEngine(satellite, sync_offset=args.sync_offset,
                                          bass_cut_hz=args.satellite_bass_cut, boost_db=args.satellite_boost,
@@ -1954,6 +1958,8 @@ def main(argv=None) -> int:
         panel = _start_panel(args, p, loop, app, audio, stt, chat, backend, watcher, m, face_dir, idle,
                              runner=runner, notebook=notebook if memory_on else None, agent_source=agent_source,
                              orch=orch, panel=early_panel)
+        if panel is not None and satellite is not None:
+            panel.boards = satellite
     print(f"[start] ready in {time.time() - starting['since']:.0f} s")
 
     if stt is not None:

@@ -232,6 +232,7 @@ class WebPanel:
         self.pause: Callable[[bool], None] = lambda on: None
         self.agent = None                 # errands.AgentControl when the face hands work to an agent
         self.dreams_dir: Optional[str] = None   # dream.py reports, listed on the Dreams tab
+        self.boards = None                # satellite.SatelliteServer when a board is the mic and speaker
         self.wifi = WifiControl()
         self.calib: Dict[str, Any] = {"state": "idle", "prompt": "", "result": None, "error": ""}
         self._calib_go = threading.Event()
@@ -272,7 +273,25 @@ class WebPanel:
             def _json(self, obj: Any, code: int = 200) -> None:
                 self._send(code, json.dumps(obj).encode())
 
+            def _foreign(self, post: bool) -> bool:
+                """True (and 403 sent) for a request another web page made. The page has no password,
+                so without this any site open in the browser could post here: a form post, a fetch
+                from another origin, or a DNS-rebound name pointing at this machine."""
+                host = (self.headers.get("Host") or "").lower()
+                name = host.split("]")[0] + "]" if host.startswith("[") else host.rsplit(":", 1)[0]
+                origin = (self.headers.get("Origin") or "").lower()
+                ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                bad = (panel.host in ("127.0.0.1", "localhost", "::1") and name not in ("127.0.0.1", "localhost", "[::1]")) \
+                    or (origin and origin != f"http://{host}") \
+                    or self.headers.get("Sec-Fetch-Site") == "cross-site" \
+                    or (post and ctype != "application/json")
+                if bad:
+                    self._json({"error": "requests from other pages are refused"}, 403)
+                return bool(bad)
+
             def do_GET(self):
+                if self._foreign(post=False):
+                    return
                 u = urlparse(self.path)
                 try:
                     if u.path == "/":
@@ -304,6 +323,8 @@ class WebPanel:
                         else:
                             with open(path, encoding="utf-8") as f:
                                 self._send(200, f.read().encode(), "text/plain; charset=utf-8")
+                    elif u.path == "/api/boards":
+                        self._json(panel.boards.boards() if panel.boards else {"error": "no board in use (--satellite)"})
                     elif u.path == "/api/agent":
                         self._json(panel.agent.info() if panel.agent else
                                    {"error": "this face does not hand work to an agent (no \"errands\" in its face.json)"})
@@ -313,6 +334,8 @@ class WebPanel:
                     self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
             def do_POST(self):
+                if self._foreign(post=True):
+                    return
                 u = urlparse(self.path)
                 n = int(self.headers.get("Content-Length") or 0)
                 try:
@@ -320,7 +343,14 @@ class WebPanel:
                 except ValueError:
                     body = {}
                 try:
-                    if u.path == "/api/set":
+                    if u.path in ("/api/boards/allow", "/api/boards/remove"):
+                        if not panel.boards:
+                            self._json({"error": "no board in use (--satellite)"})
+                        else:
+                            fn = panel.boards.allow_board if u.path.endswith("allow") else panel.boards.remove_board
+                            err = fn(str(body.get("id", "")))
+                            self._json({"error": err} if err else panel.boards.boards())
+                    elif u.path == "/api/set":
                         self._json(panel.set(body.get("name", ""), body.get("value")))
                     elif u.path == "/api/action":
                         self._json(panel.run_action(body.get("name", ""), str(body.get("text", ""))))
@@ -501,7 +531,7 @@ h2{font-size:1.05rem;margin:1.2rem 0 .6rem}#toast{position:fixed;bottom:1rem;rig
 img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 </style></head><body>
 <header><h1>Talker control</h1><span class="sub" id="who">connecting…</span><span class="sub" id="up"></span></header>
-<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="dreams">Dreams</button></nav>
+<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="dreams">Dreams</button></nav>
 <main>
 <section id="status" class="on">
   <div class="grid" id="cards"></div>
@@ -545,6 +575,16 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
   <div class="row" id="dreamlist"></div>
   <div class="log" id="dreamtext" style="max-height:none">Pick a report.</div>
 </section>
+<section id="boards">
+  <p class="help">Which boards may connect to this machine as Clara's ears and voice. With nobody on the list, any device on your network can. A board that is not on the list is refused and shows up below, so you can let it in.</p>
+  <div id="bdoff" class="help" style="display:none"></div>
+  <div id="bdon">
+    <div class="grid"><div class="card"><h3>Access</h3><div class="big" id="bdstate">–</div><div class="help" id="bdcur"></div></div></div>
+    <div class="row" id="bdlock"></div>
+    <h2>Allowed</h2><div class="wrap"><table id="bdallowed"></table></div>
+    <h2>Refused <span class="help">(asked to connect and were turned away)</span></h2><div class="wrap"><table id="bdrefused"></table></div>
+  </div>
+</section>
 <section id="agent">
   <p class="help">Where this character's <code>{{task ...}}</code> errands go: <code>tools/agent_relay.py</code> on the machine with your agent harness (see <code>tools/AGENT_RELAY.md</code>). Changes apply at once; tasks asked for while no address is set wait and are sent when one is. Saved to <code>settings.json</code> for the next start.</p>
   <div id="agentoff" class="help" style="display:none"></div>
@@ -568,7 +608,7 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 <div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='dreams')dreams();});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='dreams')dreams();});
 async function dreams(){const r=await (await fetch('/api/dreams')).json();$('#dreamlist').innerHTML=(r.reports||[]).length?r.reports.map(n=>`<button class="act" onclick="dreamOpen('${esc(n)}')">${esc(n.replace('.md',''))}</button>`).join(''):'<span class="help">No dreams yet.</span>';if((r.reports||[]).length)dreamOpen(r.reports[0])}
 async function dreamOpen(n){const r=await fetch('/api/dreams/'+encodeURIComponent(n));$('#dreamtext').textContent=r.ok?await r.text():'could not load '+n}
 function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;clearTimeout(t._h);t._h=setTimeout(()=>t.style.opacity=0,2200)}
@@ -608,6 +648,17 @@ async function agDecide(g,ok){const r=await post('/api/agent/decide',{goal:g,app
 async function agMode(){const r=await post('/api/agent/mode',{mode:$('#agmode').value});toast(r.error||r.message)}
 async function agTest(){$('#agmsg').textContent='testing…';const r=await post('/api/agent/test',{url:$('#agurl').value});$('#agmsg').textContent=r.error||(r.ok?`reachable in ${r.ms} ms${r.running!=null?', '+r.running+' running':''}`:`not reachable: ${r.detail}`)}
 async function agSet(){const r=await post('/api/agent/set',{url:$('#agurl').value,save:true});$('#agmsg').textContent=r.error||r.message;agent(false)}
+async function boards(){const r=await (await fetch('/api/boards')).json();
+ if(r.error){$('#bdon').style.display='none';$('#bdoff').style.display='block';$('#bdoff').textContent=r.error;return}
+ $('#bdon').style.display='block';$('#bdoff').style.display='none';const c=r.current||{};
+ $('#bdstate').textContent=r.open?'open to any device':'allow-list on';$('#bdstate').className='big '+(r.open?'warn':'ok');
+ $('#bdcur').textContent=c.id?`board in use: ${c.board||'?'} at ${c.ip||'?'}, ${c.connected?'connected':'not connected now'}`:'no board has connected since the start';
+ $('#bdlock').innerHTML=r.open&&c.id?`<button class="act primary" onclick="bdAllow('${esc(c.id)}')">Allow only this board</button><span class="help">every other device is refused from then on</span>`:'';
+ $('#bdallowed').innerHTML='<tr><th>board id</th><th></th><th></th></tr>'+(r.allowed.length?r.allowed.map(a=>`<tr><td><code>${esc(a.id)}</code></td><td class="help">${a.current?'the board in use':''}</td><td>${a.locked?'<span class="help">set in .env</span>':`<button class="act" onclick="bdRemove('${esc(a.id)}')">Remove</button>`}</td></tr>`).join(''):'<tr><td class="help" colspan="3">none: any device may connect</td></tr>');
+ $('#bdrefused').innerHTML='<tr><th>board id</th><th>address</th><th>last tried</th><th>tries</th><th></th></tr>'+(r.refused.length?r.refused.map(d=>`<tr><td><code>${esc(d.id)}</code>${d.mac&&d.client?'<div class="help">MAC '+esc(d.mac)+'</div>':''}</td><td>${esc(d.ip)}</td><td>${new Date(d.seen*1000).toLocaleTimeString()}</td><td>${d.count}</td><td><button class="act primary" onclick="bdAllow('${esc(d.id)}')">Allow</button></td></tr>`).join(''):'<tr><td class="help" colspan="5">none</td></tr>')}
+async function bdAllow(id){if(!confirm('Let board '+id+' connect from now on? Only do this for a board you own.'))return;const r=await post('/api/boards/allow',{id});toast(r.error||'allowed');boards()}
+async function bdRemove(id){const r=await post('/api/boards/remove',{id});toast(r.error||'removed');boards()}
+setInterval(()=>{if($('#boards').classList.contains('on'))boards()},3000);
 setInterval(()=>{if($('#agent').classList.contains('on'))agent(false)},3000);
 tick();setInterval(tick,500);
 </script></body></html>

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 import uuid
@@ -450,6 +451,9 @@ class SatelliteServer:
         self.allow = {a.strip().lower() for a in (allow or []) if a.strip()}
         self._allowed_ips: set = set()           # where an allowed board was last seen (firmware download)
         self._refused_seen: set = set()
+        self.refused: Dict[str, Dict[str, object]] = {}   # client id or MAC -> what was seen, for the control page
+        self.locked_ids: set = set()             # allowed from .env or the command line: not removable on the page
+        self.on_allow_change: Optional[Callable[[List[str]], None]] = None   # saves the page-added ids
         self.volume = volume                     # device speaker level to set on connect, 0-100
         self.advertise_host = advertise_host     # None: whatever address the device reached us on
         self.token = token
@@ -561,12 +565,58 @@ class SatelliteServer:
             if self._may_connect(request):
                 return await handler(request)
             who = request.headers.get("Device-Id") or request.remote or "?"
+            key = (request.headers.get("Client-Id") or request.headers.get("Device-Id") or "").strip().lower()
+            if key and (key in self.refused or len(self.refused) < 20):
+                r = self.refused.setdefault(key, {"client": request.headers.get("Client-Id", ""),
+                                                  "mac": request.headers.get("Device-Id", ""), "count": 0})
+                r.update(ip=request.remote or "", seen=time.time(), count=int(r["count"]) + 1)
             if who not in self._refused_seen and len(self._refused_seen) < 50:
                 self._refused_seen.add(who)
                 self.on_event("satellite", f"refused a device that is not on the allow-list: {who} "
                                            f"(client id {request.headers.get('Client-Id') or 'none'})")
             raise web.HTTPForbidden(text="this device is not on the allow-list")
         return gate
+
+    # ── the allow-list, from the control page ─────────────────────
+    def boards(self) -> Dict[str, object]:
+        """What the control page's Boards tab shows."""
+        dev = self.device or {}
+        return {"open": not self.allow,
+                "allowed": [{"id": a, "locked": a in self.locked_ids,
+                             "current": a in {str(dev.get("client", "")).lower(), str(dev.get("mac", "")).lower()}}
+                            for a in sorted(self.allow)],
+                "refused": [dict(v, id=k) for k, v in sorted(self.refused.items(), key=lambda kv: -float(kv[1]["seen"]))],
+                "current": {"id": str(dev.get("client") or dev.get("mac") or ""), "board": dev.get("board", ""),
+                            "ip": dev.get("ip", ""), "connected": self.connected}}
+
+    def allow_board(self, board_id: str) -> str:
+        """Let a board in from now on (and save it). Returns an error, or ''."""
+        bid = str(board_id or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f:-]{6,64}", bid):
+            return "that does not look like a board id"
+        self.allow.add(bid)
+        self.refused.pop(bid, None)
+        self._refused_seen.clear()
+        self._save_allow()
+        self.on_event("satellite", f"board allowed from the control page: {bid}")
+        return ""
+
+    def remove_board(self, board_id: str) -> str:
+        bid = str(board_id or "").strip().lower()
+        if bid in self.locked_ids:
+            return "that board is allowed in .env or on the command line; remove it there"
+        if bid not in self.allow:
+            return "that board is not on the list"
+        if self.allow == {bid}:
+            return "it is the only board on the list; removing it would let every device in"
+        self.allow.discard(bid)
+        self._save_allow()
+        self.on_event("satellite", f"board removed from the allow-list: {bid}")
+        return ""
+
+    def _save_allow(self) -> None:
+        if self.on_allow_change:
+            self.on_allow_change(sorted(self.allow - self.locked_ids))
 
     def _note_open(self, board_id: str) -> None:
         """Once, with no allow-list: say how to let only this board in."""
