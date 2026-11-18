@@ -19,7 +19,7 @@ import shutil
 import subprocess
 from typing import Any, Dict, List, Optional
 
-from .env_config import HERE
+from .env_config import ALIASES, HERE
 
 ENV_PATH = os.path.join(HERE, ".env")
 HOST_ENV = os.path.expanduser("~/.config/clara-code/host.env")
@@ -123,10 +123,15 @@ class SettingsStore:
     # -- reading ---------------------------------------------------------------------------------
     def view(self) -> Dict[str, Any]:
         env = parse(self.env_path)
+        aliases = {a: c for c, names in ALIASES.items() for a in names}     # older names for the same key
         rows = []
         for key, group, label, help_, kind, applies in KNOWN:
-            rows.append(self._row(key, env, group, label, help_, kind, applies))
-        for key in sorted(k for k in env if k not in KNOWN_KEYS):
+            row = self._row(key, env, group, label, help_, kind, applies)
+            alias = next((a for a in ALIASES.get(key, []) if env.get(a)), None)
+            if not row["set"] and alias:
+                row.update(set=True, alias=alias)
+            rows.append(row)
+        for key in sorted(k for k in env if k not in KNOWN_KEYS and k not in aliases):
             rows.append(self._row(key, env, "Other", key, "Set in .env.", "secret" if is_secret(key) else "text", "host"))
         return {"settings": rows, "host_args": parse(self.host_env).get("CLARA_ARGS", ""),
                 "host_env": self.host_env.replace(os.path.expanduser("~"), "~"),
@@ -169,6 +174,8 @@ class SettingsStore:
         if is_secret(key) and not v:
             raise ValueError("to remove a key, use Clear")
         _write(self.env_path, key, v)
+        for alias in ALIASES.get(key, []):           # one name per key from now on
+            _write(self.env_path, alias, None)
         self._mark(key)
         return {"message": f"{key} saved" + ("" if is_secret(key) else f" as {v}")}
 
@@ -176,7 +183,8 @@ class SettingsStore:
         self._check()
         if not KEY_RE.fullmatch(key or ""):
             raise ValueError("not a setting's name")
-        _write(self.env_path, key, None)
+        for k in [key] + ALIASES.get(key, []):
+            _write(self.env_path, k, None)
         self._mark(key)
         return {"message": f"{key} removed"}
 

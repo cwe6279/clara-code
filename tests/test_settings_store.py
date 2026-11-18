@@ -66,3 +66,14 @@ def test_the_page_never_carries_a_secret(tmp_path):
         assert "saved" in json.loads(urllib.request.urlopen(req, timeout=5).read())["message"]
     finally:
         panel.stop()
+
+
+def test_an_older_name_counts_as_set_and_saving_tidies_it(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("FISH_AUDIO_KEY=fish-secret\n")
+    st = SettingsStore(str(env), str(tmp_path / "h.env"))
+    rows = {r["key"]: r for r in st.view()["settings"]}
+    assert rows["FISH_AUDIO_API_KEY"]["set"] and rows["FISH_AUDIO_API_KEY"]["alias"] == "FISH_AUDIO_KEY"
+    assert "FISH_AUDIO_KEY" not in rows and "fish-secret" not in json.dumps(st.view())
+    st.set("FISH_AUDIO_API_KEY", "new-fish")
+    assert env.read_text() == "FISH_AUDIO_API_KEY=new-fish\n"
