@@ -28,6 +28,12 @@ How a task runs:
   * A task that arrives within RELAY_FOLLOWUP_MIN minutes of the last one continues
     that Claude Code conversation, so "now add tests too" works.
     "new job" / "start fresh" in the task text starts a new one.
+  * A conversation that has cost RELAY_SESSION_USD or run RELAY_SESSION_JOBS jobs is not
+    continued: every resume re-sends the whole conversation, so each job in a long chain costs
+    more than the last. The follow-up starts a new session with a short note of what was asked
+    before and the last answer, and Claude Code reads the files again.
+  * Each ledger line keeps the run's token counts (fresh input, cache writes, cache reads,
+    output) and the exact model ids Claude Code used.
   * "sonnet" or "opus" in the task picks that model; otherwise haiku (cheap).
   * "How much has Claude Code cost" is answered from the spending ledger, with no
     Claude Code run. The ledger is on this machine, where the box cannot edit it.
@@ -40,6 +46,7 @@ How a task runs:
 Settings (environment):
     RELAY_HOST 127.0.0.1   RELAY_PORT 8032   RELAY_STATE ~/.local/share/clara-box/relay_tasks.json
     RELAY_FOLLOWUP_MIN 20  RELAY_MINUTES 15 (time limit per run)
+    RELAY_SESSION_USD 0.30  RELAY_SESSION_JOBS 10 (when a follow-up starts a new session)
     CLARA_BOX_CLAUDE_JOB_USD 1.00   CLARA_BOX_CLAUDE_MONTHLY_USD 20
     CLARA_BOX_KEY / CLARA_BOX_KNOWN_HOSTS / CLARA_BOX_PORT (defaults under ~/.local/share/clara-box)
     AGENT_RELAY_TOKEN  optional shared secret; the voice host sends it as X-Relay-Token
@@ -93,7 +100,7 @@ APPROVED_NOTE = ("(The owner asked for this themselves, so you need no permissio
                  "the request is genuinely unclear.)")
 
 PROMPT = """{task}
-{context}
+{context}{handoff}
 (From Clara, the owner's voice assistant. Your final answer is spoken to the owner.)"""
 
 
@@ -144,6 +151,22 @@ class Ledger:
         jobs = [e for e in self.entries() if float(e.get("at") or 0) >= self.month_start(now)]
         return (f"Claude Code has cost {_dollars(month)} this month over {len(jobs)} jobs, "
                 f"{_dollars(self.spent(day0))} of it today, out of a {_dollars(cap)} monthly allowance.")
+
+
+def _usage(r: dict) -> dict:
+    """Token counts and exact model ids from Claude Code's result line, for the ledger."""
+    out = {}
+    u = r.get("usage")
+    if isinstance(u, dict):
+        keys = {"in": "input_tokens", "cache_write": "cache_creation_input_tokens",
+                "cache_read": "cache_read_input_tokens", "out": "output_tokens"}
+        tok = {k: int(u[v]) for k, v in keys.items() if isinstance(u.get(v), (int, float))}
+        if tok:
+            out["tokens"] = tok
+    mu = r.get("modelUsage")
+    if isinstance(mu, dict) and mu:
+        out["model_ids"] = sorted(str(k)[:60] for k in mu)
+    return out
 
 
 def _dollars(x: float) -> str:
@@ -219,12 +242,15 @@ class BoxRunner:
 
 class Relay:
     def __init__(self, state_path: Path, ledger: Ledger, runner: BoxRunner,
-                 followup_min: float = 20.0, minutes: int = 15):
+                 followup_min: float = 20.0, minutes: int = 15,
+                 session_usd: float = 0.30, session_jobs: int = 10):
         self.state_path = state_path
         self.ledger = ledger
         self.runner = runner
         self.followup_s = followup_min * 60
         self.minutes = minutes
+        self.session_usd = session_usd
+        self.session_jobs = session_jobs
         self.tasks: dict = {}
         self.last_session = ""
         self.last_at = 0.0
@@ -299,6 +325,30 @@ class Relay:
                 return m
         return "haiku"
 
+    def _too_long(self, session: str) -> bool:
+        """Whether continuing this Claude Code conversation would cost more than starting over."""
+        runs = [e for e in self.ledger.entries() if e.get("session") == session]
+        return (sum(float(e.get("cost") or 0) for e in runs) >= self.session_usd
+                or len(runs) >= self.session_jobs)
+
+    def _handoff(self, session: str) -> str:
+        """A short note for the new session: what was asked in the old one, and its last answer."""
+        with self._lock:
+            old = sorted((t for t in self.tasks.values() if t.get("session") == session),
+                         key=lambda t: float(t.get("created") or t.get("updated") or 0))
+        asks = [t["task"].splitlines()[0][:120] for t in old if t.get("task")][-8:]
+        last = next((t.get("result") or t.get("summary") or "" for t in reversed(old)
+                     if t.get("state") == "done"), "")
+        if not asks and not last:
+            return ""
+        note = ("\n\nThis continues earlier work. The earlier Claude Code conversation got long, so this "
+                "is a new one; read the files again rather than assuming what is in them.")
+        if asks:
+            note += "\nWhat was asked before, oldest first:\n" + "\n".join(f"- {a}" for a in asks)
+        if last:
+            note += f"\nThe last answer was: {last[:400]}"
+        return note
+
     def _work(self, tid: str, answer: str | None) -> None:
         t = self.tasks[tid]
         text = t["task"]
@@ -335,8 +385,13 @@ class Relay:
             else:
                 fresh = bool(FRESH_RE.search(text))
                 session = "" if fresh or now - self.last_at > self.followup_s else self.last_session
+                handoff = ""
+                if session and self._too_long(session):
+                    handoff = self._handoff(session)
+                    print(f"[relay] {tid} session {session[:8]} is long; starting a new one with a note")
+                    session = ""
                 ctx = f"\nWhat the owner had just said: {t['context']}" if t.get("context") else ""
-                prompt = PROMPT.format(task=APPROVED_RE.sub(APPROVED_NOTE, text), context=ctx)
+                prompt = PROMPT.format(task=APPROVED_RE.sub(APPROVED_NOTE, text), context=ctx, handoff=handoff)
             model = t.get("model") or self._pick_model(text)
             print(f"[relay] {tid} running ({model}{', continuing ' + session[:8] if session else ', new session'}): {text[:90]}")
             try:
@@ -352,7 +407,7 @@ class Relay:
                                  "cost": round(float(cost), 4), "turns": r.get("num_turns"),
                                  "seconds": round(time.time() - now), "session": r.get("session_id"),
                                  "error": bool(r.get("is_error")), "what": text.splitlines()[0][:80],
-                                 "via": "relay"})
+                                 "via": "relay", **_usage(r)})
             sid = str(r.get("session_id") or "")
             sid = sid if SESSION_RE.fullmatch(sid) else session
             if sid:
@@ -750,6 +805,10 @@ def main() -> int:
     ap.add_argument("--state", default=env("RELAY_STATE", str(BOX_DIR / "relay_tasks.json")))
     ap.add_argument("--followup-min", type=float, default=float(env("RELAY_FOLLOWUP_MIN", "20")))
     ap.add_argument("--minutes", type=int, default=int(env("RELAY_MINUTES", "15")))
+    ap.add_argument("--session-usd", type=float, default=float(env("RELAY_SESSION_USD", "0.30")),
+                    help="a conversation that has cost this much is not continued (default 0.30)")
+    ap.add_argument("--session-jobs", type=int, default=int(env("RELAY_SESSION_JOBS", "10")),
+                    help="nor one that has run this many jobs (default 10)")
     ap.add_argument("--costs", nargs="?", type=int, const=0, default=None, metavar="DAYS",
                     help="print what Claude Code jobs have cost (and each job of the last DAYS days), then exit")
     a = ap.parse_args()
@@ -759,10 +818,15 @@ def main() -> int:
         for e in ledger.entries():
             if a.costs and float(e.get("at") or 0) >= time.time() - a.costs * 86400:
                 when = dt.datetime.fromtimestamp(float(e.get("at") or 0)).strftime("%m-%d %H:%M")
-                print(f"  {when}  ${float(e.get('cost') or 0):.3f}  {e.get('model', '')}")
+                tok = e.get("tokens") or {}
+                tok = ("  in {in} write {cache_write} read {cache_read} out {out}".format(
+                    **{k: f"{tok.get(k, 0):,}" for k in ("in", "cache_write", "cache_read", "out")})
+                       if tok else "")
+                print(f"  {when}  ${float(e.get('cost') or 0):.3f}  {e.get('model', '')}"
+                      f"  {str(e.get('session') or '')[:8]}{tok}")
         return 0
     relay = Relay(Path(a.state), Ledger(Path(env("CLARA_BOX_CLAUDE_LEDGER", str(BOX_DIR / "claude-costs.jsonl")))),
-                  BoxRunner(), a.followup_min, a.minutes)
+                  BoxRunner(), a.followup_min, a.minutes, a.session_usd, a.session_jobs)
     os.umask(0o077)
     try:
         BOX_DIR.chmod(0o700)                      # the VM disk, its key and the task texts live here

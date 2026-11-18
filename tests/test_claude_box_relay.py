@@ -312,3 +312,40 @@ def test_a_networked_relay_takes_any_host_with_the_token_only(tmp_path):
         assert call({"Host": "desktop.local:8032", "X-Relay-Token": "s3cret", "Origin": "http://x"}) == 403
     finally:
         srv.shutdown()
+
+
+def test_a_long_session_is_not_continued_but_handed_over(tmp_path):
+    replies = [_reply("one", sid="s-1", cost=0.20), _reply("two", sid="s-1", cost=0.15),
+               _reply("three", sid="s-2", cost=0.01)]
+    relay, runner = _relay(tmp_path, replies, session_usd=0.30)
+    _wait(relay, relay.submit("build the dashboard"))
+    _wait(relay, relay.submit("now add a chart"))
+    _wait(relay, relay.submit("now make it blue"))
+    assert [c["session"] for c in runner.calls] == ["", "s-1", ""]
+    p = runner.calls[2]["prompt"]
+    assert "now make it blue" in p and "- build the dashboard" in p and "- now add a chart" in p
+    assert "The last answer was: two" in p
+
+
+def test_job_count_also_ends_a_session_and_answers_still_resume(tmp_path):
+    relay, runner = _relay(tmp_path, [_reply("one"), _reply("QUESTION: which colour?"), _reply("ok")],
+                           session_jobs=1)
+    _wait(relay, relay.submit("build it"))
+    tid = relay.submit("now restyle it")
+    _wait(relay, tid)
+    assert runner.calls[1]["session"] == ""               # one job already: new session
+    relay.answer(tid, "blue")
+    _wait(relay, tid, ("done", "failed"))
+    assert runner.calls[2]["session"] == "s-1"            # an answer always goes back to its session
+
+
+def test_ledger_keeps_tokens_and_exact_model_ids(tmp_path):
+    r = _reply("done")
+    r["usage"] = {"input_tokens": 12, "cache_creation_input_tokens": 3400,
+                  "cache_read_input_tokens": 56000, "output_tokens": 789}
+    r["modelUsage"] = {"claude-haiku-4-5-20251001": {"costUSD": 0.01}}
+    relay, _ = _relay(tmp_path, [r])
+    _wait(relay, relay.submit("build it"))
+    e = relay.ledger.entries()[0]
+    assert e["tokens"] == {"in": 12, "cache_write": 3400, "cache_read": 56000, "out": 789}
+    assert e["model_ids"] == ["claude-haiku-4-5-20251001"]

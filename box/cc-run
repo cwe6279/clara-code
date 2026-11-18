@@ -1,7 +1,8 @@
 #!/bin/bash
 # cc-run ID TIMEOUT — task on stdin; settings in env (set by tools/claude_box_relay.py):
 #   CC_MODEL (default haiku), CC_BUDGET (USD per job, default 1), CC_RESUME (session id),
-#   CC_MODE (permission mode, default auto).
+#   CC_MODE (permission mode, default auto), CC_CACHE_TTL (prompt cache, default 1h: spoken
+#   follow-ups come minutes apart, past the 5-minute default an API key gets).
 # Runs Claude Code headless in tmux window cc-ID (watchable), waits, prints the result JSON.
 id=$1; secs=${2:-600}
 model=${CC_MODEL:-haiku}; budget=${CC_BUDGET:-1}; resume=${CC_RESUME:-}; mode=${CC_MODE:-auto}
@@ -11,7 +12,7 @@ cat > "$task"; rm -f "$events" "$done_f"
 keyf=$HOME/.config/anthropic-key
 [ -s "$keyf" ] || { echo "{\"is_error\":true,\"result\":\"No API key in the box yet (~/.config/anthropic-key).\"}"; exit 2; }
 args="--model $model --max-budget-usd $budget --permission-mode $mode --output-format stream-json --verbose${resume:+ --resume $resume}"
-inner="export ANTHROPIC_API_KEY=\$(cat $keyf) PATH=\$HOME/.local/bin:\$HOME/venv/bin:\$PATH; cd \$HOME/work;
+inner="export ANTHROPIC_API_KEY=\$(cat $keyf) CLAUDE_CODE_PROMPT_CACHE_TTL=${CC_CACHE_TTL:-1h} PATH=\$HOME/.local/bin:\$HOME/venv/bin:\$PATH; cd \$HOME/work;
 echo \"── Claude Code task $id \$(date +%T)  model $model, budget \\\$$budget${resume:+, continuing $resume}\"; sed \"s/^/  /\" $task; echo;
 timeout -k 10 $secs claude -p \"\$(cat $task)\" $args < /dev/null \
  | tee $events | jq -r --unbuffered 'if .type==\"assistant\" then (.message.content[]? | if .type==\"text\" then \"» \"+.text elif .type==\"tool_use\" then \"⚙ \"+.name+\" \"+((.input|tostring)[0:160]) else empty end) elif .type==\"result\" then \"── done (\"+(.num_turns|tostring)+\" turns, $\"+(.total_cost_usd|tostring)+\")\" else empty end';
