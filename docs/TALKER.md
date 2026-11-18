@@ -83,7 +83,7 @@ None of these is required: any mic, speaker and camera the operating system sees
 |-------|-------|-------|
 | **Desktop, developing** | any USB mic and speaker, optional webcam | Local Whisper is fine here. A speakerphone like the Jabra is handy but it hears itself, so keep half-duplex (the default). |
 | **Doorstep or room prop** | projector (or any display), a **separate** directional mic and speaker, optional webcam, internet | Separate mic and speaker are what make `--barge-in` possible: point the mic at the visitors and put the speaker behind or beside it, facing away. Aim for a mic level of 500-5,000 on `--mic-test` when someone talks at visitor distance. |
-| **Raspberry Pi 5 kiosk** | Pi 5 with 4 GB or more, USB mic and speaker (or a USB audio interface), HDMI projector, camera (USB or Pi camera), internet | Use `--profile pi`: recognition and everything heavy run in the cloud. Local Whisper takes seconds per turn on a Pi; Vosk is the only workable local option. Pi 4 works at about half the speed. Wi-Fi setup without a keyboard is on the roadmap. |
+| **Raspberry Pi 5 kiosk** | Pi 5 with 4 GB or more, USB mic and speaker (or a USB audio interface), HDMI projector, camera (USB or Pi camera), internet | Use `--profile pi`: recognition and everything heavy run in the cloud. Local Whisper takes seconds per turn on a Pi; Vosk is the only workable local option. Pi 4 works at about half the speed. |
 
 **Placement.** Camera at the visitors' eye level, wide enough to see a small group and what
 they hold up; it only needs to see people, not the projection. Keep the projected face out
@@ -364,7 +364,7 @@ and serves a camera snapshot and a Wi-Fi join endpoint. What it gives you:
   face.json fields of this face with what they do.
 - **Wi-Fi**: the box's network devices, a scan, and join a network through NetworkManager (as on
   Raspberry Pi OS), for kiosks with no keyboard. It needs the box to be reachable first, over
-  Ethernet or a known Wi-Fi; a captive setup hotspot is on the roadmap.
+  Ethernet or a known Wi-Fi.
 
 ### Raspberry Pi
 
@@ -373,8 +373,7 @@ and serves a camera snapshot and a Wi-Fi join endpoint. What it gives you:
 The Pi joins the network on first boot with no keyboard or monitor, and the control page is then at
 `http://<hostname>.local:8020` from any phone on the same network, which is what
 `docs/talker.service` exposes. Changing networks later is the control page's Wi-Fi tab. If the card
-was flashed without Wi-Fi details, plug in Ethernet once, or a keyboard and monitor, to get there;
-a self-hosted setup hotspot for that case is on the roadmap.
+was flashed without Wi-Fi details, plug in Ethernet once, or a keyboard and monitor, to get there.
 
 
 The face and audio plumbing are light; the recognizer is the only stage a Pi
