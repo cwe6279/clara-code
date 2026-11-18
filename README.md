@@ -128,6 +128,9 @@ Clara running after you log out, wrap the two commands in systemd user units of 
   straight away without a Claude Code run, so they cost nothing. Anything less clear-cut goes to
   Claude Code as a normal job.
 - **Watch it work:** `clara-box` opens the VM's tmux session; each job is a window.
+- **Look at files without a terminal:** the control page's **Files** tab browses her photos and
+  scans, her session logs, and everything in the box's workspace. Preview, download, rename,
+  delete (to a trash you can recover from), upload into the box, and see how full its disk is.
 - **See a page it built:** servers in the box appear on the host at `http://localhost:8100` to
   `8119`. They stop after a day unless you say "keep it". The control page's **Box** tab lists
   them, and keeps a library of earlier ones you can start again.

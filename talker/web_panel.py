@@ -240,6 +240,8 @@ class WebPanel:
         self.boards = None                # satellite.SatelliteServer when a board is the mic and speaker
         self.box_url = None               # () -> the Claude Code relay's address: the Box tab asks it
         self.captures_dir: Optional[str] = None   # her photos and scans: the Files tab's "Captures"
+        self.logs_dir: Optional[str] = None       # session logs (conversation transcripts): "Logs"
+        self.log_in_use: Optional[str] = None     # this run's own log: not renamed or deleted under it
         self.wifi = WifiControl()
         self.calib: Dict[str, Any] = {"state": "idle", "prompt": "", "result": None, "error": ""}
         self._calib_go = threading.Event()
@@ -279,11 +281,18 @@ class WebPanel:
         except (urllib.error.URLError, OSError) as e:
             return 502, json.dumps({"error": f"the relay is not reachable: {e}"}).encode()
 
-    def _cap_path(self, rel: str) -> str:
-        base = os.path.realpath(self.captures_dir or "")
+    def _local_dir(self, where: str) -> str:
+        d = self.logs_dir if where == "logs" else self.captures_dir
+        if not d:
+            raise ValueError(f"no {where} folder in this run")
+        return d
+
+    def _cap_path(self, rel: str, where: str = "captures") -> str:
+        d = self._local_dir(where)
+        base = os.path.realpath(d)
         p = os.path.realpath(os.path.join(base, str(rel or "").lstrip("/")))
-        if not self.captures_dir or (p != base and not p.startswith(base + os.sep)):
-            raise ValueError("that path is outside the captures folder")
+        if p != base and not p.startswith(base + os.sep):
+            raise ValueError(f"that path is outside the {where} folder")
         return p
 
     def files_list(self, where: str, rel: str) -> Dict[str, Any]:
@@ -295,8 +304,8 @@ class WebPanel:
             except ValueError:
                 return {"error": f"no answer from the box ({code})"}
         try:
-            d = self._cap_path(rel)
-            os.makedirs(self.captures_dir, exist_ok=True)
+            os.makedirs(self._local_dir(where), exist_ok=True)
+            d = self._cap_path(rel, where)
             if not os.path.isdir(d):
                 return {"error": "not a folder"}
             items = []
@@ -306,7 +315,10 @@ class WebPanel:
                 items.append({"name": n, "type": kind, "size": st.st_size if kind == "file" else None,
                               "modified": round(st.st_mtime)})
             items.sort(key=lambda e: (e["type"] != "dir", -e["modified"]))
-            base = os.path.realpath(self.captures_dir)
+            base = os.path.realpath(self._local_dir(where))
+            in_use = os.path.realpath(self.log_in_use) if self.log_in_use else ""
+            for e in items:
+                e["in_use"] = bool(in_use) and os.path.join(d, e["name"]) == in_use
             return {"path": os.path.relpath(d, base) if d != base else "", "entries": items}
         except (ValueError, OSError) as e:
             return {"error": str(e)}
@@ -323,7 +335,7 @@ class WebPanel:
             except ValueError:
                 return None, f"error {code}"
         try:
-            p = self._cap_path(rel)
+            p = self._cap_path(rel, where)
             if not os.path.isfile(p):
                 return None, "not a file"
             if os.path.getsize(p) > self.FILE_MAX:
@@ -341,26 +353,30 @@ class WebPanel:
             except ValueError:
                 r = {"error": f"no answer from the box ({code})"}
         else:
-            r = self._captures_do(op, rel, name)
+            r = self._captures_do(op, rel, name, where)
         if "message" in r:
             self.record("files", f"{where}: {r['message']}")
         return r
 
-    def _captures_do(self, op: str, rel: str, name: str) -> Dict[str, Any]:
+    def _captures_do(self, op: str, rel: str, name: str, where: str = "captures") -> Dict[str, Any]:
         import shutil
         import subprocess
         try:
             if op == "empty-trash":
-                return {"error": "her captures go to the desktop's own Trash; empty it there"}
+                return {"error": "these go to the desktop's own Trash; empty it there"}
+            if op == "usage":
+                return {"error": "disk use is shown for the box only"}
             if op == "mkdir":
-                d = self._cap_path(rel)
+                d = self._cap_path(rel, where)
                 if not name or "/" in name or name in (".", ".."):
                     return {"error": "not a valid folder name"}
                 os.mkdir(os.path.join(d, name))
                 return {"ok": True, "message": f"folder {name} made"}
-            p = self._cap_path(rel)
-            if p == os.path.realpath(self.captures_dir):
-                return {"error": "the captures folder itself cannot be changed"}
+            p = self._cap_path(rel, where)
+            if p == os.path.realpath(self._local_dir(where)):
+                return {"error": f"the {where} folder itself cannot be changed"}
+            if self.log_in_use and p == os.path.realpath(self.log_in_use):
+                return {"error": "that is this session's log, still being written; it can go after a restart"}
             if op == "rename":
                 if not name or "/" in name or name in (".", ".."):
                     return {"error": "not a valid name"}
@@ -372,10 +388,10 @@ class WebPanel:
             if op == "trash":                    # the desktop's Trash, as the file manager does; else .trash
                 if shutil.which("gio") and subprocess.run(["gio", "trash", p], capture_output=True).returncode == 0:
                     return {"ok": True, "message": f"moved {os.path.basename(p)} to the Trash"}
-                t = os.path.join(os.path.realpath(self.captures_dir), ".trash")
+                t = os.path.join(os.path.realpath(self._local_dir(where)), ".trash")
                 os.makedirs(t, exist_ok=True)
                 os.replace(p, os.path.join(t, time.strftime("%Y%m%d-%H%M%S-") + os.path.basename(p)))
-                return {"ok": True, "message": f"moved {os.path.basename(p)} to captures/.trash"}
+                return {"ok": True, "message": f"moved {os.path.basename(p)} to {where}/.trash"}
             return {"error": f"unknown operation {op}"}
         except (ValueError, OSError) as e:
             return {"error": str(e)}
@@ -515,7 +531,7 @@ class WebPanel:
                                 self._send(200, f.read().encode(), "text/plain; charset=utf-8")
                     elif u.path in ("/api/files", "/api/files/raw"):
                         q = parse_qs(u.query)
-                        where = "box" if (q.get("where") or ["box"])[0] == "box" else "captures"
+                        where = {"box": "box", "logs": "logs"}.get((q.get("where") or ["box"])[0], "captures")
                         rel = (q.get("path") or [""])[0]
                         if u.path == "/api/files":
                             self._json(panel.files_list(where, rel))
@@ -559,7 +575,7 @@ class WebPanel:
                             self._json(panel.files_upload((q.get("path") or [""])[0], (q.get("name") or [""])[0],
                                                           raw_body, (q.get("replace") or ["0"])[0] == "1"))
                     elif u.path.startswith("/api/files/"):
-                        where = "box" if body.get("where", "box") == "box" else "captures"
+                        where = {"box": "box", "logs": "logs"}.get(body.get("where", "box"), "captures")
                         self._json(panel.files_do(where, u.path[len("/api/files/"):], str(body.get("path", "")),
                                                   str(body.get("name", ""))))
                     elif u.path.startswith("/api/box/"):
@@ -798,8 +814,8 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
   <div class="log" id="dreamtext" style="max-height:none">Pick a report.</div>
 </section>
 <section id="files">
-  <p class="help">Her photos and scans on this computer, and everything in Claude Code's box (its workspace, <code>~/work</code>). Files open here as pictures or plain text; pages from the box are shown as their source, never run. Deleting moves things to a trash you can recover from.</p>
-  <div class="row"><button class="act" id="flcap" onclick="flWhere('captures')">Captures</button><button class="act" id="flbox" onclick="flWhere('box')">Box workspace</button>
+  <p class="help">Her photos and scans and her session logs (what was said, so treat them as private) on this computer, and everything in Claude Code's box (its workspace, <code>~/work</code>). Files open here as pictures or plain text; pages from the box are shown as their source, never run. Deleting moves things to a trash you can recover from.</p>
+  <div class="row"><button class="act" id="flcap" onclick="flWhere('captures')">Captures</button><button class="act" id="flbox" onclick="flWhere('box')">Box workspace</button><button class="act" id="fllogs" onclick="flWhere('logs')">Logs</button>
     <span style="flex:1"></span><button class="act" onclick="flLoad()">Refresh</button><button class="act" onclick="flMkdir()">New folder</button>
     <label class="act" id="flupl" style="cursor:pointer">Upload…<input type="file" multiple style="display:none" onchange="flUpload(this)"></label>
     <button class="act" id="flempty" onclick="flEmpty()">Empty box trash</button></div>
@@ -904,16 +920,16 @@ function flSize(n){return n==null?'':n<1024?n+' B':n<1048576?(n/1024).toFixed(0)
 function flJoin(a,b){return a?a+'/'+b:b}
 function flRaw(p,dl){return `/api/files/raw?where=${FL.where}&path=${encodeURIComponent(p)}${dl?'&download=1':''}&t=${Date.now()}`}
 function flWhere(w){FL.where=w;FL.path='';$('#flprev').innerHTML='';flLoad()}
-async function flLoad(){$('#flcap').className='act'+(FL.where==='captures'?' primary':'');$('#flbox').className='act'+(FL.where==='box'?' primary':'');
+async function flLoad(){$('#flcap').className='act'+(FL.where==='captures'?' primary':'');$('#flbox').className='act'+(FL.where==='box'?' primary':'');$('#fllogs').className='act'+(FL.where==='logs'?' primary':'');
  $('#flupl').style.display=$('#flempty').style.display=FL.where==='box'?'':'none';$('#flmsg').textContent='loading…';
  const r=await (await fetch(`/api/files?where=${FL.where}&path=${encodeURIComponent(FL.path)}`)).json();
  if(r.error){$('#flmsg').textContent=r.error;$('#fltable').innerHTML='';return}
  $('#flmsg').textContent=r.entries.length?'':'empty';FL.path=r.path||'';flUsage();
  const parts=FL.path?FL.path.split('/'):[];let acc='';
- $('#flcrumbs').innerHTML=`<a href="#" onclick="FL.path='';flLoad();return false">${FL.where==='box'?'~/work':'captures'}</a>`+parts.map(p=>{acc=flJoin(acc,p);const a=acc;return ` / <a href="#" onclick="FL.path='${esc(a)}';flLoad();return false">${esc(p)}</a>`}).join('');
+ $('#flcrumbs').innerHTML=`<a href="#" onclick="FL.path='';flLoad();return false">${FL.where==='box'?'~/work':FL.where}</a>`+parts.map(p=>{acc=flJoin(acc,p);const a=acc;return ` / <a href="#" onclick="FL.path='${esc(a)}';flLoad();return false">${esc(p)}</a>`}).join('');
  $('#fltable').innerHTML='<tr><th>name</th><th>size</th><th>modified</th><th></th></tr>'+r.entries.map(e=>{const p=flJoin(FL.path,e.name);const ep=esc(p).replace(/'/g,"\\'");
   const open=e.type==='dir'?`<a href="#" onclick="FL.path='${ep}';$('#flprev').innerHTML='';flLoad();return false">📁 ${esc(e.name)}</a>`:`<a href="#" onclick="flShow('${ep}');return false">${esc(e.name)}</a>`;
-  return `<tr><td>${open}${e.type==='link'?' <span class="help">(link)</span>':''}</td><td>${flSize(e.size)}</td><td class="help">${new Date(e.modified*1000).toLocaleString()}</td><td style="white-space:nowrap">${e.type==='file'?`<a class="act" href="${flRaw(p,true)}">Download</a> `:''}<button class="act" onclick="flRename('${ep}','${esc(e.name).replace(/'/g,"\\'")}')">Rename</button> <button class="act" onclick="flTrash('${ep}')">Delete</button></td></tr>`}).join('')}
+  return `<tr><td>${open}${e.type==='link'?' <span class="help">(link)</span>':''}${e.in_use?' <span class="help">(this session, still being written)</span>':''}</td><td>${flSize(e.size)}</td><td class="help">${new Date(e.modified*1000).toLocaleString()}</td><td style="white-space:nowrap">${e.type==='file'?`<a class="act" href="${flRaw(p,true)}">Download</a> `:''}<button class="act" onclick="flRename('${ep}','${esc(e.name).replace(/'/g,"\\'")}')">Rename</button> <button class="act" onclick="flTrash('${ep}')">Delete</button></td></tr>`}).join('')}
 async function flUsage(){if(FL.where!=='box'){$('#flusage').textContent='';return}
  const u=await post('/api/files/usage',{where:'box'});if(u.error){$('#flusage').textContent='';return}
  const g=n=>(n/1073741824).toFixed(1)+' GB';const used=u.disk_total-u.disk_free;const pct=Math.round(100*used/u.disk_total);

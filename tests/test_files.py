@@ -92,3 +92,28 @@ def test_box_usage(tmp_path):
     code, out = box(tmp_path, {"op": "usage"})
     u = json.loads(out)
     assert code == 0 and u["work"] == 1300 and u["trash"] == 300 and u["disk_total"] > u["disk_free"] > 0
+
+
+def test_logs_are_browsable_and_this_sessions_log_is_left_alone(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "voice-old.log").write_text("[you] hello")
+    (logs / "voice-now.log").write_text("[you] still talking")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    panel = WebPanel(port=0, host="127.0.0.1")
+    panel.logs_dir, panel.log_in_use = str(logs), str(logs / "voice-now.log")
+    J = {"Content-Type": "application/json"}
+    panel.start()
+    try:
+        code, _, out = _call(panel.port, "GET", "/api/files?where=logs&path=")
+        entries = {e["name"]: e for e in json.loads(out)["entries"]}
+        assert entries["voice-now.log"]["in_use"] and not entries["voice-old.log"]["in_use"]
+        code, h, out = _call(panel.port, "GET", "/api/files/raw?where=logs&path=voice-old.log")
+        assert out == b"[you] hello" and h["Content-Type"].startswith("text/plain")
+        _, _, out = _call(panel.port, "POST", "/api/files/trash", json.dumps({"where": "logs", "path": "voice-now.log"}), J)
+        assert "still being written" in json.loads(out)["error"] and (logs / "voice-now.log").exists()
+        _, _, out = _call(panel.port, "POST", "/api/files/trash", json.dumps({"where": "logs", "path": "voice-old.log"}), J)
+        assert "moved" in json.loads(out)["message"] and not (logs / "voice-old.log").exists()
+        assert _call(panel.port, "GET", "/api/files/raw?where=logs&path=../logs/../../x")[0] == 404
+    finally:
+        panel.stop()
