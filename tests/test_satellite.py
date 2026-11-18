@@ -424,3 +424,42 @@ def test_channel_stays_open_while_an_errand_is_out():
     eng2.end_conversation()
     now[0] += 0.1
     assert ("close", None) in eng2.tick()      # an explicit end wins over a running errand
+
+
+def test_allow_list_keeps_other_devices_out():
+    """With --satellite-allow, a device that is not listed gets nothing: no config, no audio channel."""
+    port = _free_port()
+    events = []
+    srv = SatelliteServer(host="127.0.0.1", port=port, allow=["My-Board-Uuid", " "],
+                          on_event=lambda k, t: events.append((k, t)))
+    SatelliteAudioEngine(srv, lookahead=5.0)
+    srv.start()
+    for _ in range(100):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                break
+        except OSError:
+            time.sleep(0.05)
+    base = f"http://127.0.0.1:{port}"
+
+    async def go():
+        async with aiohttp.ClientSession() as s:
+            stranger = {"Device-Id": "de:ad:be:ef:00:01", "Client-Id": "someone-else"}
+            async with s.get(base + "/xiaozhi/firmware.bin") as r:
+                assert r.status == 403                           # no listed board has been seen here yet
+            async with s.post(base + OTA_PATH, json={}, headers=stranger) as r:
+                assert r.status == 403
+            with pytest.raises(aiohttp.WSServerHandshakeError):
+                await s.ws_connect(f"ws://127.0.0.1:{port}{WS_PATH}", headers=stranger)
+            async with s.post(base + "/xiaozhi/vision/explain", data=b"x", headers=stranger) as r:
+                assert r.status == 403
+            async with s.post(base + OTA_PATH, json={}) as r:    # no ids at all
+                assert r.status == 403
+            mine = {"Device-Id": "aa:bb", "Client-Id": "my-board-uuid"}
+            async with s.post(base + OTA_PATH, json={}, headers=mine) as r:
+                assert r.status == 200 and "websocket" in await r.json()
+            async with s.ws_connect(f"ws://127.0.0.1:{port}{WS_PATH}", headers=mine) as ws:
+                await ws.close()
+    asyncio.run(go())
+    assert any("refused a device" in t and "de:ad:be:ef:00:01" in t for _, t in events)
+    assert not any("may connect" in t for _, t in events)

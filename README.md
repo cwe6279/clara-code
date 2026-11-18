@@ -43,6 +43,12 @@ would also need a rule for it.
    ```
 2. **Box.** Build the VM and install Claude Code in it: [docs/CLARA_BOX.md](docs/CLARA_BOX.md).
    Then run `clara-box-key` to give it its own API key.
+
+   **Set a spend limit on that key.** In the Anthropic Console, create a separate workspace for
+   the box's key and give the workspace a monthly spend limit. Do this before the first job.
+   Claude Code works unattended and reads the web, and the caps in this project are counted
+   inside the box, where a misled job could get around them. The Console limit is enforced by
+   Anthropic and cannot be bypassed from the box.
 3. **Board.** Flash xiaozhi-esp32 for your board and point it at the host:
    [docs/SATELLITE_ESP32.md](docs/SATELLITE_ESP32.md).
 4. **Run.**
@@ -50,6 +56,9 @@ would also need a rule for it.
    python tools/claude_box_relay.py &
    python voice_loop.py --face clara --satellite --no-window --agent-url http://127.0.0.1:8032
    ```
+5. **Lock it to your board.** When the board first checks in, the host prints its id. Put it in
+   `.env` as `SATELLITE_ALLOW=<id>` (or pass `--satellite-allow`) and restart, so no other
+   device on your network can talk to Clara.
 
 ## Using it
 
@@ -65,8 +74,8 @@ would also need a rule for it.
   `8119`.
 
 Limits are set in the environment: `CLARA_BOX_CLAUDE_JOB_USD` (default 1.00 per job) and
-`CLARA_BOX_CLAUDE_MONTHLY_USD` (default 20). The spend limit on the box's API key in the
-Anthropic Console is the real cap.
+`CLARA_BOX_CLAUDE_MONTHLY_USD` (default 20). They are a convenience. The spend limit you set on
+the box's API key in the Anthropic Console (Setup, step 2) is the cap to rely on.
 
 ## Hardware
 

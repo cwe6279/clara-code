@@ -442,8 +442,14 @@ class SatelliteServer:
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8030, advertise_host: Optional[str] = None,
                  token: str = "clara", on_event: Optional[Callable[[str, str], None]] = None,
-                 firmware: Optional[str] = None, volume: Optional[int] = None):
+                 firmware: Optional[str] = None, volume: Optional[int] = None,
+                 allow: Optional[List[str]] = None):
         self.host, self.port = host, port
+        # Boards that may connect: their Client-Id (a UUID the board made for itself) or Device-Id
+        # (its MAC address). Empty: any device on the network may connect and speak.
+        self.allow = {a.strip().lower() for a in (allow or []) if a.strip()}
+        self._allowed_ips: set = set()           # where an allowed board was last seen (firmware download)
+        self._refused_seen: set = set()
         self.volume = volume                     # device speaker level to set on connect, 0-100
         self.advertise_host = advertise_host     # None: whatever address the device reached us on
         self.token = token
@@ -505,7 +511,7 @@ class SatelliteServer:
         from aiohttp import web
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        app = web.Application()
+        app = web.Application(middlewares=[self._gate])
         app.router.add_post(OTA_PATH, self._ota)
         app.router.add_get(OTA_PATH, self._ota)
         app.router.add_get(WS_PATH, self._websocket)
@@ -530,6 +536,38 @@ class SatelliteServer:
                                   "status": self.device_status, "connected": self.connected,
                                   "ota": OTA_PATH, "websocket": WS_PATH})
 
+    def _may_connect(self, request) -> bool:
+        """With an allow-list, only listed boards get in. Every request a board makes carries its
+        ids, except the firmware download, which is allowed from an address a listed board used."""
+        if not self.allow:
+            return True
+        ids = {request.headers.get("Client-Id", "").strip().lower(),
+               request.headers.get("Device-Id", "").strip().lower()} - {""}
+        if ids & self.allow:
+            self._allowed_ips.add(request.remote)
+            return True
+        if request.path == FIRMWARE_PATH and request.remote in self._allowed_ips:
+            return True
+        if request.path == "/" and request.remote in ("127.0.0.1", "::1"):
+            return True
+        return False
+
+    @property
+    def _gate(self):
+        from aiohttp import web
+
+        @web.middleware
+        async def gate(request, handler):
+            if self._may_connect(request):
+                return await handler(request)
+            who = request.headers.get("Device-Id") or request.remote or "?"
+            if who not in self._refused_seen and len(self._refused_seen) < 50:
+                self._refused_seen.add(who)
+                self.on_event("satellite", f"refused a device that is not on the allow-list: {who} "
+                                           f"(client id {request.headers.get('Client-Id') or 'none'})")
+            raise web.HTTPForbidden(text="this device is not on the allow-list")
+        return gate
+
     async def _ota(self, request):
         from aiohttp import web
         info = {}
@@ -552,6 +590,10 @@ class SatelliteServer:
         ws_url = f"ws://{host}:{self.port}{WS_PATH}"
         self.on_event("satellite", f"device {self.device['mac'] or '?'} v{self.device['version'] or '?'} "
                                    f"checked in; websocket {ws_url}")
+        if not self.allow and not getattr(self, "_open_note", False):
+            self._open_note = True               # once: how to close the door
+            self.on_event("satellite", "any device on this network may connect. To allow only this board: "
+                                       f"--satellite-allow {self.device['client'] or self.device['mac'] or '<its id>'}")
         now = time.time()
         offset_min = -time.timezone // 60 if not time.daylight else -time.altzone // 60
         if self.firmware_version:

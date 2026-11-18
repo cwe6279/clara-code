@@ -50,8 +50,10 @@ Claude Code in the box uses its own key, never yours.
 - `clara-box-key` asks for the key without echoing it and writes it to `~/.config/anthropic-key`
   in the box. To rotate it, run the command again with the new key, then revoke the old one in
   the Console.
-- Give the key its own Console workspace with a spend limit. Anything in the box can read the
-  key, so the Console limit is the real cap.
+- **Give the key its own Console workspace with a monthly spend limit, before the first job.**
+  Anything in the box can read the key, and a job misled by a web page could change the box's
+  own files and the costs it reports. The Console limit is enforced by Anthropic, outside the
+  box, so it is the one cap that always holds.
 
 ## Security model
 
@@ -88,10 +90,12 @@ The box limits what Claude Code can touch. These limit who can give it work:
 
 Known limits, by design:
 
-- **Anyone on your network can talk to Clara.** The board's port (8030) is open to the LAN so
-  the board can reach it, and the token it uses is handed out by the host itself, so it does not
-  keep anyone out. A device on your Wi-Fi could pose as a board and ask for jobs. Run this on a
-  network you trust, or firewall the port to the board's address.
+- **Without an allow-list, anyone on your network can talk to Clara.** The board's port (8030)
+  is open to the LAN so the board can reach it. Set `SATELLITE_ALLOW` in `.env` (or
+  `--satellite-allow`) to your board's Client-Id, which the host prints when the board checks
+  in; other devices are then refused and logged. The id travels unencrypted on your network, so
+  this keeps out other devices, not someone able to capture your Wi-Fi traffic. A MAC address
+  (Device-Id) also works but is easier to copy.
 - **The control page has no password.** It stays on this machine unless you pass
   `--web-host 0.0.0.0`, which opens settings, the camera snapshot and Wi-Fi joining to the LAN.
 - **A web page can mislead Claude Code.** It runs in auto mode and reads the web, so text on a

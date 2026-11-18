@@ -1152,6 +1152,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "not this machine: serve its config and audio (see talker/satellite.py)")
     p.add_argument("--satellite-port", type=int, default=8030, help="Satellite server port (default 8030)")
     p.add_argument("--satellite-host", default="0.0.0.0", help="Satellite server bind address")
+    p.add_argument("--satellite-allow", default=None,
+                   help="Only these boards may connect: a comma-separated list of their Client-Id (shown when "
+                        "a board checks in) or Device-Id (MAC address). Also SATELLITE_ALLOW in .env. "
+                        "Default: any device on the network")
     p.add_argument("--satellite-advertise", default=None,
                    help="Host name or IP the device should connect to (default: the one it reached us on)")
     p.add_argument("--satellite-firmware", default=None,
@@ -1463,7 +1467,8 @@ def main(argv=None) -> int:
         from .satellite import SatelliteServer, SatelliteAudioEngine
         satellite = SatelliteServer(host=args.satellite_host, port=args.satellite_port,
                                     advertise_host=args.satellite_advertise,
-                                    firmware=args.satellite_firmware, volume=args.satellite_volume)
+                                    firmware=args.satellite_firmware, volume=args.satellite_volume,
+                                    allow=(args.satellite_allow or os.environ.get("SATELLITE_ALLOW", "")).split(","))
         try:
             audio = SatelliteAudioEngine(satellite, sync_offset=args.sync_offset,
                                          bass_cut_hz=args.satellite_bass_cut, boost_db=args.satellite_boost,
