@@ -242,6 +242,9 @@ class WebPanel:
         self.captures_dir: Optional[str] = None   # her photos and scans: the Files tab's "Captures"
         self.logs_dir: Optional[str] = None       # session logs (conversation transcripts): "Logs"
         self.log_in_use: Optional[str] = None     # this run's own log: not renamed or deleted under it
+        from .settings_store import SettingsStore
+        # the Settings tab: read-only when the page is open to the network
+        self.settings = SettingsStore(writable=host in ("127.0.0.1", "localhost", "::1"))
         self.wifi = WifiControl()
         self.calib: Dict[str, Any] = {"state": "idle", "prompt": "", "result": None, "error": ""}
         self._calib_go = threading.Event()
@@ -408,6 +411,34 @@ class WebPanel:
             self.record("files", f"box: {r['message']}")
         return r
 
+    def settings_do(self, op: str, body: dict) -> Dict[str, Any]:
+        st = self.settings
+        try:
+            if op == "set":
+                r = st.set(str(body.get("key", "")), str(body.get("value", "")))
+            elif op == "clear":
+                r = st.clear(str(body.get("key", "")))
+            elif op == "args":
+                r = st.set_host_args(str(body.get("args", "")))
+            elif op == "service":
+                r = st.service(str(body.get("name", "")), bool(body.get("on")))
+            elif op == "restart":
+                code, out = self._relay_raw("GET", "/health")       # never cut a Claude Code job short
+                try:
+                    running = json.loads(out or b"{}").get("running", 0) if code == 200 else 0
+                except ValueError:
+                    running = 0
+                if running and not body.get("force"):
+                    return {"error": "a Claude Code job is running; restart when it has finished", "busy": True}
+                r = st.restart()
+            else:
+                return {"error": f"unknown request {op}"}
+        except (ValueError, PermissionError, RuntimeError, OSError) as e:
+            return {"error": str(e)}
+        if "message" in r:
+            self.record("settings", r["message"])
+        return r
+
     def _box(self, method: str, path: str, body: Optional[dict] = None):
         """(body, code) for the Box tab: the relay runs box-app in the box."""
         url = self.box_url() if self.box_url else ""
@@ -541,6 +572,8 @@ class WebPanel:
                                 self._json({"error": err}, 404)
                             else:
                                 self._send_file(data, os.path.basename(rel), (q.get("download") or ["0"])[0] == "1")
+                    elif u.path == "/api/settings":
+                        self._json(panel.settings.view())
                     elif u.path == "/api/box":
                         self._json(*panel._box("GET", "/box/apps"))
                     elif u.path == "/api/boards":
@@ -567,7 +600,9 @@ class WebPanel:
                     except ValueError:
                         body = {}
                 try:
-                    if u.path == "/api/files/upload":
+                    if u.path.startswith("/api/settings/"):
+                        self._json(panel.settings_do(u.path[len("/api/settings/"):], body))
+                    elif u.path == "/api/files/upload":
                         q = parse_qs(u.query)
                         if n > panel.FILE_MAX:
                             self._json({"error": "uploads are limited to 25 MB"}, 413)
@@ -768,6 +803,8 @@ a.act,label.act{display:inline-block;text-decoration:none;line-height:normal}
 .exitem:hover{background:var(--panel)}.exitem.on{background:var(--panel);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}
 .extree a{display:block;padding:.22rem .55rem;border-radius:5px;font-size:.88rem;color:var(--ink);text-decoration:none;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .extree a:hover{background:var(--panel)}.extree a.on{font-weight:600;color:var(--accent)}
+.ico{display:inline-flex;align-items:center;justify-content:center;width:2rem;height:2rem;margin-left:.15rem;border:1px solid transparent;border-radius:6px;background:none;color:var(--mute);font:inherit;font-size:1rem;text-decoration:none;cursor:pointer}
+.ico:hover{border-color:var(--line);background:var(--panel);color:var(--ink)}.ico.del:hover{color:var(--bad)}
 button.act,a.act,label.act{font:inherit;padding:.4rem .8rem;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer}
 button.act.primary,a.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .help{color:var(--mute);font-size:.84rem}.q{display:inline-block;width:1.1em;height:1.1em;border-radius:50%;border:1px solid var(--mute);color:var(--mute);font-size:.7em;text-align:center;line-height:1.1em;margin-left:.3em;cursor:help}
@@ -777,7 +814,7 @@ h2{font-size:1.05rem;margin:1.2rem 0 .6rem}#toast{position:fixed;bottom:1rem;rig
 img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 </style></head><body>
 <header><h1>Talker control</h1><span class="sub" id="who">connecting…</span><span class="sub" id="up"></span></header>
-<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="files">Box &amp; files</button><button data-t="dreams">Dreams</button></nav>
+<nav><button class="on" data-t="status">Status</button><button data-t="tune">Tune</button><button data-t="test">Test setup</button><button data-t="ref">Reference</button><button data-t="wifi">Wi-Fi</button><button data-t="agent">Agent</button><button data-t="boards">Boards</button><button data-t="files">Box Manager</button><button data-t="settings">Settings</button><button data-t="dreams">Dreams</button></nav>
 <main>
 <section id="status" class="on">
   <div class="grid" id="cards"></div>
@@ -856,6 +893,20 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
   </div>
  </div>
 </section>
+<section id="settings">
+  <p class="help">Clara's settings, kept in <code>.env</code> in her folder. Keys are never shown: you can replace or clear one, not read it. Most settings are read when she starts, so each says what has to restart.</p>
+  <div id="stro" class="help bad" style="display:none"></div>
+  <div id="stpending" class="card" style="display:none;margin:.6rem 0"><b class="warn">Saved changes apply after a restart.</b> <button class="act primary" onclick="stRestart()">Restart Clara</button> <span class="help" id="strestmsg"></span></div>
+  <div id="stgroups"></div>
+  <h2>Add a setting</h2>
+  <div class="row"><input type="text" id="stnewk" placeholder="NAME" style="width:16rem;text-transform:uppercase"><input type="text" id="stnewv" placeholder="value" style="width:20rem"><button class="act" onclick="stAdd()">Add</button></div>
+  <h2>Her options <span class="help">(the voice host's flags, in <span id="sthostenv"></span>)</span></h2>
+  <div class="row"><textarea id="stargs" rows="3" style="width:100%;font-family:'IBM Plex Mono',Consolas,monospace;font-size:.85rem"></textarea></div>
+  <div class="row"><button class="act" onclick="stArgs()">Save options</button><span class="help">Every flag is listed on the Reference tab.</span></div>
+  <h2>Services</h2>
+  <div class="wrap"><table id="stsvc"></table></div>
+  <div class="row"><button class="act" onclick="stRestart()">Restart Clara</button><span class="help">Restarts the relay and her voice host; the board reconnects by itself. Not while a Claude Code job runs.</span></div>
+</section>
 <section id="boards">
   <p class="help">Which boards may connect to this machine as Clara's ears and voice. With nobody on the list, any device on your network can. A board that is not on the list is refused and shows up below, so you can let it in.</p>
   <div id="bdoff" class="help" style="display:none"></div>
@@ -889,7 +940,7 @@ img.snap{max-width:100%;border-radius:8px;border:1px solid var(--line)}
 <div id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='files'){if($('#exservers').style.display==='none')flLoad();else box();flUsage()}if(b.dataset.t==='dreams')dreams();});
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.querySelectorAll('section').forEach(s=>s.classList.toggle('on',s.id===b.dataset.t));if(b.dataset.t==='ref')loadRef();if(b.dataset.t==='wifi')wifi(false);if(b.dataset.t==='agent')agent(true);if(b.dataset.t==='boards')boards();if(b.dataset.t==='settings')settings();if(b.dataset.t==='files'){if($('#exservers').style.display==='none')flLoad();else box();flUsage()}if(b.dataset.t==='dreams')dreams();});
 async function dreams(){const r=await (await fetch('/api/dreams')).json();$('#dreamlist').innerHTML=(r.reports||[]).length?r.reports.map(n=>`<button class="act" onclick="dreamOpen('${esc(n)}')">${esc(n.replace('.md',''))}</button>`).join(''):'<span class="help">No dreams yet.</span>';if((r.reports||[]).length)dreamOpen(r.reports[0])}
 async function dreamOpen(n){const r=await fetch('/api/dreams/'+encodeURIComponent(n));$('#dreamtext').textContent=r.ok?await r.text():'could not load '+n}
 function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;clearTimeout(t._h);t._h=setTimeout(()=>t.style.opacity=0,2200)}
@@ -960,7 +1011,7 @@ async function flLoad(){exMark('ex-'+FL.where);$('#exhelp').textContent=EXHELP[F
  $('#flcrumbs').innerHTML=`<a href="#" onclick="FL.path='';flLoad();return false">${FL.where==='box'?'~/work':FL.where}</a>`+parts.map(p=>{acc=flJoin(acc,p);const a=acc;return ` / <a href="#" onclick="FL.path='${esc(a)}';flLoad();return false">${esc(p)}</a>`}).join('');
  $('#fltable').innerHTML='<tr><th>name</th><th>size</th><th>modified</th><th></th></tr>'+r.entries.map(e=>{const p=flJoin(FL.path,e.name);const ep=esc(p).replace(/'/g,"\\'");
   const open=e.type==='dir'?`<a href="#" onclick="FL.path='${ep}';$('#flprev').innerHTML='';flLoad();return false">📁 ${esc(e.name)}</a>`:`<a href="#" onclick="flShow('${ep}');return false">${esc(e.name)}</a>`;
-  return `<tr><td>${open}${e.type==='link'?' <span class="help">(link)</span>':''}${e.in_use?' <span class="help">(this session, still being written)</span>':''}</td><td>${flSize(e.size)}</td><td class="help">${new Date(e.modified*1000).toLocaleString()}</td><td style="white-space:nowrap">${e.type==='file'?`<a class="act" href="${flRaw(p,true)}">Download</a> `:''}<button class="act" onclick="flRename('${ep}','${esc(e.name).replace(/'/g,"\\'")}')">Rename</button> <button class="act" onclick="flTrash('${ep}')">Delete</button></td></tr>`}).join('')}
+  return `<tr><td>${open}${e.type==='link'?' <span class="help">(link)</span>':''}${e.in_use?' <span class="help">(this session, still being written)</span>':''}</td><td>${flSize(e.size)}</td><td class="help">${new Date(e.modified*1000).toLocaleString()}</td><td style="white-space:nowrap">${e.type==='file'?`<a class="ico" href="${flRaw(p,true)}" title="Download" aria-label="Download ${esc(e.name)}">⬇</a>`:''}<button class="ico" title="Rename" aria-label="Rename ${esc(e.name)}" onclick="flRename('${ep}','${esc(e.name).replace(/'/g,"\\'")}')">✎</button><button class="ico del" title="Delete" aria-label="Delete ${esc(e.name)}" onclick="flTrash('${ep}')">🗑</button></td></tr>`}).join('')}
 async function flUsage(){const u=await post('/api/files/usage',{where:'box'});if(u.error){$('#exusage').textContent='';return}
  const g=n=>(n/1073741824).toFixed(1)+' GB';const used=u.disk_total-u.disk_free;const pct=Math.round(100*used/u.disk_total);
  $('#exusage').innerHTML=`<div class="exhead">Box disk</div><b class="${pct>85?'bad':pct>70?'warn':''}">${g(used)} of ${g(u.disk_total)} (${pct}%)</b><br>workspace ${flSize(u.work)}<br>box trash ${flSize(u.trash)}`+(u.host_vm!=null?`<br>on this computer: ${g(u.host_vm)}, ${g(u.host_free)} free`:'')}
@@ -977,6 +1028,27 @@ async function flUpload(inp){for(const f of inp.files){$('#flmsg').textContent='
  let r=await (await fetch(`/api/files/upload?path=${encodeURIComponent(FL.path)}&name=${encodeURIComponent(f.name)}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f})).json();
  if(r.error&&/already exists/.test(r.error)&&confirm(f.name+' is already there. Replace it?'))r=await (await fetch(`/api/files/upload?path=${encodeURIComponent(FL.path)}&name=${encodeURIComponent(f.name)}&replace=1`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f})).json();
  toast(r.error||r.message)}inp.value='';flLoad()}
+const APPLIES={host:'restart Clara',relay:'restart Clara (the relay)',both:'restart Clara'};
+async function settings(){const r=await (await fetch('/api/settings')).json();ST=r;
+ $('#stro').style.display=r.writable?'none':'block';$('#stro').textContent=r.writable?'':'Read-only: the control page is open to the network (--web-host 0.0.0.0), so settings cannot be changed from here.';
+ $('#stpending').style.display=r.pending.length?'block':'none';$('#sthostenv').textContent=r.host_env;
+ if(document.activeElement!==$('#stargs'))$('#stargs').value=r.host_args;
+ const groups={};r.settings.forEach(x=>(groups[x.group]=groups[x.group]||[]).push(x));
+ $('#stgroups').innerHTML=Object.entries(groups).map(([g,rows])=>`<h2>${esc(g)}</h2><div class="wrap"><table>${rows.map(stRow).join('')}</table></div>`).join('');
+ $('#stsvc').innerHTML='<tr><th>service</th><th>state</th><th>at start-up</th><th></th></tr>'+(r.services.length?r.services.map(v=>`<tr><td><code>${esc(v.name)}</code></td><td class="${v.active==='active'?'ok':'bad'}">${esc(v.active)}</td><td>${esc(v.enabled)}</td><td>${v.name==='clara-speaker'?`<button class="act" onclick="stSvc('${v.name}',${v.enabled!=='enabled'})">${v.enabled==='enabled'?'Turn off':'Turn on'}</button> <span class="help">plays a USB board's speech on this computer</span>`:''}</td></tr>`).join(''):'<tr><td class="help" colspan="4">not installed as services (services/install.sh)</td></tr>')}
+let ST=null;
+function stRow(x){const id='st_'+x.key;const badge=`<span class="help">${esc(APPLIES[x.applies]||'restart Clara')}</span>`;
+ const input=x.kind==='secret'?`<span class="${x.set?'ok':'help'}">${x.set?'set ✓':'not set'}</span> <input type="password" id="${id}" placeholder="${x.set?'replace…':'paste it here'}" autocomplete="off" style="width:16rem">`
+  :`<input type="${x.kind==='number'?'number':'text'}" ${x.kind==='number'?'step="0.01" min="0"':''} id="${id}" value="${esc(x.value||'')}" style="width:20rem">`;
+ return `<tr><td style="width:15rem"><b>${esc(x.label)}</b><div class="help"><code>${esc(x.key)}</code></div></td><td>${input}<div class="help">${esc(x.help)}</div></td><td style="white-space:nowrap"><button class="act" onclick="stSet('${x.key}')">Save</button>${x.set?` <button class="act" onclick="stClear('${x.key}')">Clear</button>`:''}<div>${badge}</div></td></tr>`}
+async function stSet(k){const el=$('#st_'+k);const r=await post('/api/settings/set',{key:k,value:el.value});toast(r.error||r.message);if(!r.error&&el.type==='password')el.value='';settings()}
+async function stClear(k){if(!confirm('Remove '+k+' from .env?'))return;const r=await post('/api/settings/clear',{key:k});toast(r.error||r.message);settings()}
+async function stAdd(){const k=$('#stnewk').value.trim().toUpperCase();const r=await post('/api/settings/set',{key:k,value:$('#stnewv').value});toast(r.error||r.message);if(!r.error){$('#stnewk').value='';$('#stnewv').value=''}settings()}
+async function stArgs(){const r=await post('/api/settings/args',{args:$('#stargs').value});toast(r.error||r.message);settings()}
+async function stSvc(n,on){const r=await post('/api/settings/service',{name:n,on});toast(r.error||r.message);settings()}
+async function stRestart(){if(!confirm('Restart Clara now? She is away for a few seconds.'))return;let r=await post('/api/settings/restart',{});
+ if(r.busy&&confirm(r.error+'. Restart anyway and cut it short?'))r=await post('/api/settings/restart',{force:true});
+ toast(r.error||r.message);if(!r.error){$('#strestmsg').textContent='restarting…';setTimeout(()=>location.reload(),8000)}}
 function boxLib(r){const day=t=>t?new Date(t*1000).toLocaleDateString():'';
  $('#boxlib').innerHTML='<tr><th>name</th><th>what it is</th><th>last run</th><th>runs</th><th>folder</th><th></th></tr>'+((r.library||[]).length?r.library.map(e=>`<tr><td><b>${esc(e.name)}</b></td><td>${esc(e.about||'')}</td><td>${day(e.last_started)}${e.running?' <span class="ok">running</span>':(e.why?'<div class="help">'+esc(e.why)+'</div>':'')}</td><td>${e.starts}</td><td class="help">${esc(e.dir)}${e.dir_exists?'':' <span class="bad">(gone)</span>'}</td><td style="white-space:nowrap">${e.running?'':`${e.dir_exists?`<button class="act" onclick="boxDo('restart',{name:'${esc(e.name)}'})">Start again</button> `:''}<button class="act" onclick="boxForget('${esc(e.name)}')">Forget</button>`}</td></tr>`).join(''):'<tr><td class="help" colspan="6">empty</td></tr>')}
 async function boxForget(n){if(confirm('Remove '+n+' from the library? Its files in the box are not deleted.'))boxDo('forget',{name:n})}
