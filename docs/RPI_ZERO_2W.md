@@ -1,6 +1,6 @@
 # Talker on a Raspberry Pi Zero 2 W
 
-The main README targets a Pi 5 (4 GB+). This page covers the Pi Zero 2 W:
+The engine guide ([TALKER.md](TALKER.md)) targets a Pi 5 (4 GB+). This page covers the Pi Zero 2 W:
 512 MB of RAM, four slow Cortex-A53 cores, one micro-USB data port, and Wi-Fi
 and Bluetooth sharing a single radio. Talker runs on it if every heavy stage
 (speech-to-text, brain, voice) is in the cloud and the face is kept light.
