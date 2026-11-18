@@ -1,0 +1,12 @@
+[Unit]
+Description=Clara: the Claude Code relay (errands to the box)
+After=network-online.target
+
+[Service]
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/.venv/bin/python -u tools/claude_box_relay.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=Clara: play a USB board's speech on this computer (boards without a speaker)
+After=pipewire.service
+StartLimitIntervalSec=0
+
+[Service]
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/.venv/bin/python -u tools/usb_speaker.py /dev/ttyACM0
+Restart=always
+RestartSec=3
+
+
+[Install]
+WantedBy=default.target

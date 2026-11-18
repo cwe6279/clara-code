@@ -1,0 +1,19 @@
+[Unit]
+Description=Clara: the voice host (her board, speech, conversation)
+After=network-online.target clara-relay.service
+Wants=clara-relay.service
+
+[Service]
+WorkingDirectory=@REPO@
+# Her options: CLARA_ARGS in ~/.config/clara-code/host.env (written once by services/install.sh).
+Environment="CLARA_ARGS=--face clara --satellite --no-window --stt whisper --tts piper --agent-url http://127.0.0.1:8032"
+EnvironmentFile=-%h/.config/clara-code/host.env
+ExecStart=@REPO@/.venv/bin/python -u voice_loop.py $CLARA_ARGS
+# What she hears and says is already kept in logs/ (the Files tab); only errors go to the journal.
+StandardOutput=null
+StandardError=journal
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

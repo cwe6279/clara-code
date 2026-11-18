@@ -111,8 +111,18 @@ Check that KVM is usable: `ls -l /dev/kvm` should exist and be readable by you, 
    Boards allowed on the page are saved in `settings.json`. You can also list them in `.env` as
    `SATELLITE_ALLOW=<id>,<id>` (or `--satellite-allow`); those can only be removed there.
 
-Both programs run in the foreground. Nothing here installs them as services yet, so to keep
-Clara running after you log out, wrap the two commands in systemd user units of your own.
+7. **Keep her running.** Install the user services, so she starts with the computer and comes back
+   if anything stops:
+   ```bash
+   services/install.sh            # add --speaker for a board that plays its speech over USB
+   systemctl --user start clara-relay clara-host
+   ```
+   Her options live in `~/.config/clara-code/host.env` (`CLARA_ARGS=...`, the flags from step 5);
+   `systemctl --user restart clara-host` after a change. `journalctl --user -u clara-relay -f`
+   follows the relay. Her conversations go to `logs/` (the control page's **Box & files** tab),
+   not to the system journal. `clara-speaker` plays the speech of a board with no speaker of its
+   own through this computer's sound; once the board has an amplifier,
+   `systemctl --user disable --now clara-speaker`.
 
 ## Using it
 
