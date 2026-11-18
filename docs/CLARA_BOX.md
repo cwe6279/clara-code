@@ -92,7 +92,8 @@ and to give the localhost address. Servers stop when the box restarts.
 ## What is installed
 
 Debian 13 (genericcloud image), 4 vCPU, 4 GB RAM, 40 GB thin disk (about 3.5 GB used on the host
-after setup). Claude Code at `~/.local/bin/claude`. In `~/venv`: Playwright with Chromium
+after setup). Change the CPU and memory in `box/clara-box.xml` to suit your host; 2 CPUs and
+2 GB is a reasonable floor for Claude Code with a headless browser, though that is untested. Claude Code at `~/.local/bin/claude`. In `~/venv`: Playwright with Chromium
 (headless shell), pandas, openpyxl, pypdf, pymupdf, requests, beautifulsoup4, lxml, ddgs (web
 search). `clara` can `pip install` more into `~/venv`, but cannot `apt install`: use `admin`.
 

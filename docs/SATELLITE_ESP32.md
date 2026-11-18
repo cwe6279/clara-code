@@ -60,6 +60,11 @@ server side, so an announcement while it is idle is dropped (noted in the log).
 
 ## The board
 
+This page was written on one board, described below. Another board that xiaozhi-esp32 supports
+works the same way with the stock firmware: build for that board's name in place of the
+`waveshare/…` one, and skip the parts about the fork and the screen, which are specific to this
+board. Pin numbers, flash sizes, volume levels and battery notes here will not match yours.
+
 Waveshare **ESP32-S3-Touch-AMOLED-1.8 V2**, sold by Spotpear with a "DeepSeek" label.
 ESP32-S3, 8 MB PSRAM, 16 MB flash, 368x448 AMOLED (SH8601), CST816S touch, ES8311
 codec with mic and speaker, AXP2101 power chip with a battery, QMI8658 IMU. Stock

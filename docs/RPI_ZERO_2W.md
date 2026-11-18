@@ -5,6 +5,9 @@ The main README targets a Pi 5 (4 GB+). This page covers the Pi Zero 2 W:
 and Bluetooth sharing a single radio. Talker runs on it if every heavy stage
 (speech-to-text, brain, voice) is in the cloud and the face is kept light.
 
+This is one tested low-end host, kept as a reference. The timings and settings below were
+measured on that Pi with one mic and speaker; on other hardware, measure again.
+
 Measured on a Zero 2 W running Debian 13 (trixie), Python 3.13, October 2026.
 
 ## What runs where

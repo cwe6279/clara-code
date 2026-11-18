@@ -20,6 +20,25 @@ python tools/claude_box_relay.py &
 python voice_loop.py --face clara --satellite --no-window --agent-url http://127.0.0.1:8032
 ```
 
+**Your hardware will differ.** The boards, microphones, speakers and computers named in these
+docs are the ones this was built and measured on. They are a reference, not a requirement, and
+the settings shown for them will not fit most setups. What it actually needs:
+
+- **A board** that runs [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) and has a
+  microphone and a speaker. That firmware supports many ESP32 boards (its `main/boards/`
+  folder lists them); build it for yours and point it at the host. Only Clara's on-screen face
+  is tied to one board.
+- **A host**: any Linux machine that stays on. The numbers in the docs (timings, frame rates,
+  what runs locally and what goes to the cloud) come from a desktop with a GPU and from
+  Raspberry Pis; measure your own before copying a setting.
+- **For the box**: a host CPU with virtualization turned on. The VM's size (4 CPUs, 4 GB) is
+  two lines in `box/clara-box.xml`.
+
+Device names in the examples (`gomic`, `jabra`) are fragments of what one machine calls its
+devices: run `python voice_loop.py --list-devices` and use yours. `--profile pi` is a bundle of
+settings tuned for one Raspberry Pi kiosk; treat it as a starting point and override it, or
+leave it off and pass the flags you want.
+
 **Host machine.** This is built for a Linux host (developed on Fedora): the box is a KVM
 virtual machine under libvirt, and the launchers are shell scripts. On Windows, run the host
 side inside WSL2. That has not been tested here; expect to need systemd turned on in WSL
@@ -98,8 +117,9 @@ ROADMAP.md  requirements.txt  .env.example
 
 ## Hardware
 
-Tested with: a Logitech C920 webcam, a Samson Go Mic (USB condenser), a Jabra Speak 510
+For reference, tested with: a Logitech C920 webcam, a Samson Go Mic (USB condenser), a Jabra Speak 510
 (USB speakerphone) on a Fedora desktop; a Raspberry Pi 5 is the intended kiosk box.
+None of these is required: any mic, speaker and camera the operating system sees will do.
 
 | Setup | Needs | Notes |
 |-------|-------|-------|
