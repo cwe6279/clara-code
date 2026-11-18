@@ -453,9 +453,8 @@ the next time the room is quiet, as a turn nobody asked for, and can read the le
 with `{{tool tasks}}`. The backend is any service that answers three small JSON endpoints;
 `tools/agent_relay.py` is one, wrapping any command-line harness (`claude -p` by default),
 with `RELAY_ROUNDS=2` for a second pass that critiques and improves the first. How to adapt
-your own harness: [tools/AGENT_RELAY.md](../tools/AGENT_RELAY.md). The fuse-agents harness answers the
-contract itself (its `talker_tasks.py`, protocol 2 with approvals and questions), so it needs no relay:
-run its `web_server.py` on port 8080 and point `AGENT_RELAY_URL` at that machine.
+your own harness: [tools/AGENT_RELAY.md](../tools/AGENT_RELAY.md). In clara-code the backend is
+`tools/claude_box_relay.py`, which hands errands straight to Claude Code in its box.
 
 **Away from home** the agent is a network away, so put both machines on a
 [Tailscale](https://tailscale.com) tailnet: no router changes, nothing exposed to the

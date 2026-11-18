@@ -24,11 +24,11 @@ Wants=network-online.target
 
 [Service]
 User=pi
-WorkingDirectory=/home/pi/animation
+WorkingDirectory=/home/pi/clara-code
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=SDL_VIDEODRIVER=x11
-ExecStart=/home/pi/animation/.venv/bin/python voice_loop.py --face pumpkin --profile pi --tts piper --mic-device gomic --output-device jabra --fullscreen --web-host 0.0.0.0
+ExecStart=/home/pi/clara-code/.venv/bin/python voice_loop.py --face pumpkin --profile pi --tts piper --mic-device gomic --output-device jabra --fullscreen --web-host 0.0.0.0
 Restart=on-failure
 RestartSec=5
 

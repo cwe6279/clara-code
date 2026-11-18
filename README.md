@@ -173,11 +173,10 @@ git config core.hooksPath .githooks
 pytest tests        # no board, sound device, display or VM needed
 ```
 
-## Where the voice engine came from
+## The voice engine
 
-The voice host is the Talker engine, forked from
-[cwe6279/animation](https://github.com/cwe6279/animation), where it drives animated faces for
-projection. That use is not this project's, but the engine's options (speech-to-text and voice
-backends, wake words, barge-in, latency tuning) are documented in
-[docs/TALKER.md](docs/TALKER.md). Code for the other faces and the projector window is still
-in the tree.
+The voice host is the Talker engine, which began as an animated talking face for projection.
+Everything it needs is in this repo; it is not tied to the project it came from. Its options
+(speech-to-text and voice backends, wake words, barge-in, latency tuning) are documented in
+[docs/TALKER.md](docs/TALKER.md). Code for the other faces and the projector window is still in
+the tree.

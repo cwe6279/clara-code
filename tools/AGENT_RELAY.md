@@ -61,47 +61,14 @@ Anything else you return is ignored. Anything that raises or times out (5 s) is 
 
 ## A harness that speaks the contract itself
 
-fuse-agents does (`talker_tasks.py` on its `web_server.py`, protocol 2: approvals, `needs_input`
-questions, answers, `error_kind`, optional `RELAY_TOKEN`). No shim is needed; start it where the
-tools and credentials live and point `AGENT_RELAY_URL` at it. As run on 2026-11-10, with the
-model on a llama.cpp box on the LAN:
+A harness can answer the three endpoints itself, with no shim: start it where its tools and
+credentials live and point `AGENT_RELAY_URL` (or `--agent-url`) at it. This project's own
+`tools/claude_box_relay.py` is the reference: protocol 2, with `needs_input` questions, answers
+and `error_kind`.
 
-```bash
-cd ~/Projects/fuse-agents
-LLAMACPP_BASE_URL=http://192.168.1.51:8091/v1 FORCE_LOCAL_MODEL=llamacpp_gemma4 \
-LLAMACPP_EXTRA_BODY='{"chat_template_kwargs":{"enable_thinking":false}}' \
-.venv/bin/python web_server.py --config config/local-llamacpp/agent_config.yaml --port 8080
-```
-
-As run on 2026-11-11, with Qwen3.8 Flash-Next on this machine's own llama.cpp server
-(`scripts/next_llama_server.sh` in fuse-agents, port 8002), after the Gemma box went away:
-
-```bash
-cd ~/Projects/fuse-agents
-LLAMACPP_BASE_URL=http://localhost:8002/v1 FORCE_LOCAL_MODEL=llamacpp_qwen38_next \
-LLAMACPP_EXTRA_BODY='{"chat_template_kwargs":{"enable_thinking":false}}' \
-.venv/bin/python web_server.py --config config/local-llamacpp-next/agent_config.yaml --port 8080
-```
-
-And as run later that day on Gemma 4 26B-A4B (a 4B-active MoE on local Ollama, 18 GB; alone on
-the box it prompt-processes at ~900 tok/s and generates at ~60 tok/s; the harness sends
-`think=false` to Ollama itself, and the window must be set or Ollama's small default applies):
-
-```bash
-cd ~/Projects/fuse-agents
-FORCE_LOCAL_MODEL=ollama_gemma4_26b_a4b OLLAMA_NUM_CTX=65536 \
-.venv/bin/python web_server.py --config config/local-ollama/agent_config.yaml --port 8080
-```
-
-Since 2026-11-14 that command is a user systemd unit on the desktop, `fuse-agents.service`
-(`~/.config/systemd/user/`, enabled, linger on, so it starts with the machine and listens on the LAN
-at :8080). The desktop also publishes the mDNS alias `agent.local`, so talker's `.env` holds
-`AGENT_RELAY_URL=http://agent.local:8080` on every host. `systemctl --user status fuse-agents` and
-`journalctl --user -u fuse-agents -f` are the knobs.
-
-Two things learned testing it: a `POST /tasks` with an id the harness already has is answered
+Two things to get right: a `POST /tasks` with an id the harness already has should be answered
 idempotently with the old task (so test ids must be fresh), and a thinking model must be told
-not to think or an errand's token budget goes to reasoning.
+not to think, or an errand's token budget goes to reasoning.
 
 ## The shim: `tools/agent_relay.py`
 

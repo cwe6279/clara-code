@@ -38,8 +38,8 @@ needed here. Those imports are lazy, so leaving them out is safe.
 
 ```bash
 sudo apt install -y portaudio19-dev python3-pyaudio python3-numpy python3-venv pipewire-alsa
-git clone https://github.com/cwe6279/animation.git ~/animation
-cd ~/animation
+git clone https://github.com/cwe6279/clara-code.git ~/clara-code
+cd ~/clara-code
 python3 -m venv --system-site-packages .venv
 . .venv/bin/activate
 pip install --prefer-binary pygame-ce edge-tts anthropic g2p-en pytest
@@ -53,7 +53,7 @@ fine.
 
 ### Keys
 
-Create `~/animation/.env`, then lock it with `chmod 600 ~/animation/.env`:
+Create `~/clara-code/.env`, then lock it with `chmod 600 ~/clara-code/.env`:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -210,7 +210,7 @@ costs about 40 ms per eye per frame. The CPU was not throttling (42 °C,
 Start from the Pi profile and override as needed:
 
 ```bash
-cd ~/animation && . .venv/bin/activate
+cd ~/clara-code && . .venv/bin/activate
 TALKER_FPS=20 python voice_loop.py --profile pi --face eve --tts elevenlabs --tts-model flash \
     --mic-device <usb mic fragment> --web-host 0.0.0.0
 ```
@@ -233,7 +233,7 @@ and the Pi runs the loop headless. On top of the install above:
 
 ```bash
 sudo apt install -y libopus0
-. ~/animation/.venv/bin/activate && pip install opuslib
+. ~/clara-code/.venv/bin/activate && pip install opuslib
 python voice_loop.py --face clara --satellite --satellite-lookahead 0.9 --no-window \
     --stt elevenlabs --tts elevenlabs --tts-model flash --web-host 0.0.0.0
 ```
