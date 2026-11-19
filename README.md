@@ -32,6 +32,17 @@ the box). That is Claude Code's feature, not something this project adds, and it
 tested here. The box's firewall blocks your local network, so a model server on your LAN
 would also need a rule for it.
 
+If you do point it at a local model server (llama.cpp, vLLM, LM Studio, Ollama), also set
+`CLAUDE_CODE_ATTRIBUTION_HEADER=0` in that `env` block. Claude Code otherwise puts an
+attribution block (its version and a prompt fingerprint) at the very start of the system
+prompt. A local server reuses its cache only for an identical prefix, so a changing first line
+makes it reprocess the whole prompt on every request. Claude Code's docs say that before
+v2.1.181 this block carried a per-request token on custom base URLs. Reports put the slowdown
+on local models at up to 90%. The direct Anthropic API, which the box uses by default, is not
+affected. See `CLAUDE_CODE_ATTRIBUTION_HEADER` in
+[Claude Code's environment variables](https://code.claude.com/docs/en/env-vars). Anthropic does
+not support routing Claude Code to non-Claude models.
+
 ## Requirements
 
 **Accounts**
@@ -72,6 +83,9 @@ Check that KVM is usable: `ls -l /dev/kvm` should exist and be readable by you, 
 `virsh -c qemu:///session list` should run without an error.
 
 ## Setup
+
+First install? [docs/SETUP.md](docs/SETUP.md) walks through every step from scratch, including
+Wi-Fi for the board and the host, with a check after each one. The short version:
 
 1. **Get the code.**
    ```bash
