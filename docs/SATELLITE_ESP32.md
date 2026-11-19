@@ -215,9 +215,20 @@ The speech-command model is weaker than a trained wake-word model, and a single 
 word is the hard case: a power-on log showed clear "Clara"s scoring 0.21 and 0.30 against a
 0.20 threshold, and the first two of three were missed. So since 2.5.111 the option holds
 several phrases separated by `;` (a fork addition to `build_default_assets.py`): spelling
-variants that cover how the name is said ("clara;klara;clarra;claira") plus "hey clara" and
-"hi clara", which a longer phrase makes reliable; any of them wakes her and all show as
-"Clara". `CONFIG_CUSTOM_WAKE_WORD_THRESHOLD` is 15 (0.15; up for fewer false wakes), and the
+variants that cover how the name is said, plus "hey" and "hi" forms, which a longer phrase
+makes reliable; any of them wakes her and all show as "Clara". The board turns each spelling
+into sounds with flite, so a spelling is chosen by what flite makes of it
+(`flite -t claira -ps -o /dev/null` prints the phonemes on a desktop):
+
+| Spelling | flite | Said as |
+|---|---|---|
+| `clara` | k l ae r ax | "Clarra", the American "a" as in cat |
+| `klara` | k l aa r ax | "Klahra" |
+| `claira` | k l eh r ax | "Clairuh", the common English-speaker form |
+
+So the list is `clara;klara;claira;hey clara;hi clara;hey claira;hi claira`. Spelling it
+"clairuh" does not work (flite ends it in "oo"), and "clarra" is dropped because flite says
+it exactly like "clara". `CONFIG_CUSTOM_WAKE_WORD_THRESHOLD` is 15 (0.15; up for fewer false wakes), and the
 model's recognition window is 8 s instead of 3 (it forgets what it heard at each reset, so a
 word said across one was lost).
 
