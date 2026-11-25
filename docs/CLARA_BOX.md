@@ -66,6 +66,16 @@ Claude Code in the box uses its own key, never yours.
   multicast destination, and IPv6 is off. The box cannot reach the host, the router or other
   devices on your network. DNS is pinned to 1.1.1.1 / 9.9.9.9. The rules belong to root in the
   guest, so `clara` cannot change them.
+- **This host's own services are closed from outside the box too.** The box's network is a
+  `passt` we run ourselves (`box/clara-box-net.service`, attached over vhost-user) with
+  `--no-map-gw`. libvirt's built-in passt maps the box's gateway address to this host's
+  `127.0.0.1`, where the relay, the control page and model servers listen, and libvirt offers no
+  setting to turn that off. With our own passt that address leads to the real router, which the
+  guest firewall blocks. So even root inside the box, with that firewall removed, cannot reach
+  this host's loopback (tested 2026-11-25). Other LAN devices are still kept out only by the
+  guest firewall.
+- **QEMU is confined on the host.** On Fedora, SELinux runs it as `svirt_t` with its own MCS
+  categories and passt as `passt_t`, which limits what a QEMU escape could touch.
 - **Reachable from this host only.** SSH is forwarded on `127.0.0.1:2222`, and ports 8100 to
   8119 on `127.0.0.1` for pages the box serves. Nothing is open to the LAN.
 - **What crosses back.** Text only: Claude Code's final answer. No files are copied to the host.
@@ -181,7 +191,9 @@ sed -e "s#@ADMIN_KEY@#$(cat ~/.ssh/id_ed25519.pub)#" -e "s#@AGENT_KEY@#$(cat $D/
     $S/user-data > $D/seed/user-data
 printf 'instance-id: clara-box-1\nlocal-hostname: clara-box\n' > $D/seed/meta-data
 genisoimage -output $D/seed.iso -volid cidata -joliet -rock $D/seed/user-data $D/seed/meta-data
-sed "s#@DIR@#$D#g" $S/clara-box.xml > $D/clara-box.xml
+cp $S/clara-box-net.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+systemctl --user enable --now clara-box-net          # the box's network; see "Security model"
+sed -e "s#@DIR@#$D#g" -e "s#@RUN@#$XDG_RUNTIME_DIR#g" $S/clara-box.xml > $D/clara-box.xml
 virsh -c qemu:///session define $D/clara-box.xml && virsh -c qemu:///session start clara-box
 ```
 

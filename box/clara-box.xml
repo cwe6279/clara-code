@@ -1,6 +1,7 @@
 <domain type='kvm'>
   <name>clara-box</name>
   <memory unit='GiB'>4</memory>
+  <memoryBacking><source type='memfd'/><access mode='shared'/></memoryBacking>
   <vcpu>4</vcpu>
   <os><type arch='x86_64' machine='q35'>hvm</type><boot dev='hd'/></os>
   <features><acpi/><apic/></features>
@@ -8,11 +9,11 @@
   <devices>
     <disk type='file' device='disk'><driver name='qemu' type='qcow2'/><source file='@DIR@/clara-box.qcow2'/><target dev='vda' bus='virtio'/></disk>
     <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='@DIR@/seed.iso'/><target dev='sda' bus='sata'/><readonly/></disk>
-    <interface type='user'>
-      <backend type='passt'/>
+    <!-- network: our own passt (clara-box-net.service) with no-map-gw; it also forwards
+         127.0.0.1:2222 to the box's SSH and 127.0.0.1:8100-8119 to its pages -->
+    <interface type='vhostuser'>
+      <source type='unix' path='@RUN@/clara-box/passt.sock' mode='client'><reconnect enabled='yes' timeout='5'/></source>
       <model type='virtio'/>
-      <portForward proto='tcp' address='127.0.0.1'><range start='2222' to='22'/></portForward>
-      <portForward proto='tcp' address='127.0.0.1'><range start='8100' end='8119'/></portForward>
     </interface>
     <serial type='file'><source path='@DIR@/console.log'/><target port='0'/></serial>
     <console type='file'><source path='@DIR@/console.log'/><target type='serial' port='0'/></console>

@@ -188,6 +188,8 @@ class BoxRunner:
     def ensure_up(self) -> None:
         if subprocess.run(self.ssh() + ["true"], capture_output=True, timeout=15).returncode == 0:
             return
+        # the box's network (box/clara-box-net.service) must be up before the VM starts
+        subprocess.run(["systemctl", "--user", "start", "clara-box-net"], capture_output=True, timeout=30)
         subprocess.run(["virsh", "-q", "-c", "qemu:///session", "start", "clara-box"],
                        capture_output=True, timeout=30)
         deadline = time.time() + 90

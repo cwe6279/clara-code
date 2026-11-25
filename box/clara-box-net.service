@@ -1,0 +1,20 @@
+# Network for Clara's box: a passt we start ourselves, so it can run with --no-map-gw.
+# libvirt's own passt backend maps the box's gateway address to this host's 127.0.0.1, where
+# the relay, the control page and the model servers listen; only the box's own firewall
+# (owned by root inside the box) would stand in the way. With --no-map-gw nothing in the box
+# can reach this host's loopback, whatever happens inside the box.
+# Install: copy to ~/.config/systemd/user/, then systemctl --user enable --now clara-box-net
+[Unit]
+Description=Network for Clara's box (passt, gateway not mapped to this host)
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p %t/clara-box
+ExecStartPre=/usr/bin/rm -f %t/clara-box/passt.sock
+ExecStart=/usr/bin/passt --foreground --vhost-user --socket %t/clara-box/passt.sock \
+    --no-map-gw --ipv4-only \
+    -t 127.0.0.1/2222:22 -t 127.0.0.1/8100-8119 -u none
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
