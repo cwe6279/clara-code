@@ -61,7 +61,10 @@ Claude Code in the box uses its own key, never yours.
   and running it needs no root on the host. No shared folders, no host devices.
 - **No privileges inside.** Claude Code runs as user `clara`: no sudo, root's password locked,
   SSH key restricted (`restrict,pty`: no port, agent or X11 forwarding). It can read, write and
-  delete in its home (`/home/clara`) and `/tmp`, and nowhere else.
+  delete in its home (`/home/clara`) and `/tmp`, and nowhere else. Unprivileged user namespaces
+  are off (`kernel.unprivileged_userns_clone = 0`), a common first step of kernel exploits;
+  nothing in the box needs them (Claude Code runs without its bubblewrap sandbox, and
+  Playwright starts Chromium with `--no-sandbox`).
 - **Internet, no LAN.** The guest's nftables rejects every private, link-local, CGNAT and
   multicast destination, and IPv6 is off. The box cannot reach the host, the router or other
   devices on your network. DNS is pinned to 1.1.1.1 / 9.9.9.9. The rules belong to root in the
