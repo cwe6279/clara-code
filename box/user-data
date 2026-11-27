@@ -48,6 +48,7 @@ write_files:
       net.ipv6.conf.default.disable_ipv6 = 1
       kernel.dmesg_restrict = 1
       kernel.unprivileged_userns_clone = 0
+      kernel.yama.ptrace_scope = 1
   - path: /etc/systemd/resolved.conf.d/90-public-dns.conf
     content: |
       [Resolve]
@@ -63,6 +64,7 @@ write_files:
       X11Forwarding no
       AllowAgentForwarding no
       PermitTunnel no
+      PermitUserRC no
 runcmd:
   - [chmod, "700", /home/clara, /home/admin]
   - [systemctl, enable, --now, nftables]

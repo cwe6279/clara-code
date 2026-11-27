@@ -1,0 +1,56 @@
+#!/bin/bash
+# containment-probe: what code in Clara's box can see and do, one "check value" line each.
+# Read-only: it only looks, never exploits. Installed root-owned at
+# /usr/local/bin/containment-probe and run as clara (tests/test_box_containment.py compares
+# the output with box/containment-expected.txt). The last line, kernel, is information only.
+P=/usr/bin
+line() { printf '%s %s\n' "$1" "$2"; }
+none_or() { [ -n "$1" ] && echo "$1" | $P/tr ' ' '\n' | $P/sort -u | $P/paste -sd, || echo none; }
+
+line user "$($P/id -un)"
+line groups "$($P/id -Gn | $P/tr ' ' ',')"
+$P/sudo -n true 2>/dev/null && line sudo allowed || line sudo refused
+line capeff "$($P/awk '/^CapEff/{print $2}' /proc/self/status)"
+
+s=$($P/find / -xdev \( -name docker.sock -o -name containerd.sock -o -name crio.sock -o -name podman.sock \) 2>/dev/null)
+line container_sockets "$(none_or "$s")"
+m=$($P/awk '$3 ~ /^(9p|virtiofs|nfs|nfs4|cifs|smb3|fuse\.sshfs)$/ {print $2}' /proc/mounts)
+line shared_mounts "$(none_or "$m")"
+d=""; for f in /dev/kvm /dev/mem /dev/kmem /dev/port /dev/vda /dev/sda /dev/sr0 /dev/sg0 /dev/vhost-net /dev/vhost-vsock; do
+  [ -e "$f" ] && { [ -r "$f" ] || [ -w "$f" ]; } && d="$d $f"; done
+line devices_open "$(none_or "$d")"
+u=$($P/ps -eo user= | $P/sort -u | $P/grep -vxE 'clara|admin|root|messagebus|systemd-network|systemd-resolve|systemd-timesync|_chrony|polkitd|statd|_rpc')
+line other_users "$(none_or "$u")"
+
+$P/unshare -Ur true 2>/dev/null && line user_namespaces allowed || line user_namespaces blocked
+line ptrace_scope "$(cat /proc/sys/kernel/yama/ptrace_scope)"
+$P/grep -qx 'PermitUserRC no' /etc/ssh/sshd_config.d/90-clara.conf && line ssh_user_rc off || line ssh_user_rc on
+line ipv6 "$([ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1 ] && echo off || echo on)"
+
+w=""; for f in /usr/local/bin/cc-run /usr/local/bin/claude /usr/local/bin/containment-probe \
+    /usr/local/bin/box-app /usr/local/bin/box-files /etc/clara-box/CLAUDE.md /etc/box-app.json \
+    /etc/nftables.conf /etc/sysctl.d/90-clara.conf /etc/ssh/sshd_config.d/90-clara.conf; do
+  if [ ! -e "$f" ]; then w="$w missing:$f"; elif [ -w "$f" ] || [ "$($P/stat -c %U "$f")" != root ]; then w="$w $f"; fi
+done
+line code_changeable "$(none_or "$w")"
+r=/usr/local/bin/cc-run; miss=""
+for want in '--bare' '--setting-sources ""' 'setpriv --no-new-privs' 'DISABLE_AUTOUPDATER=1' \
+    '/usr/local/bin/claude -p' '--append-system-prompt-file /etc/clara-box/CLAUDE.md'; do
+  $P/grep -qF -- "$want" "$r" || miss="$miss ${want// /_}"; done
+line runner_guards "$([ -z "$miss" ] && echo all || echo "missing:$(none_or "$miss")")"
+
+env_secrets=$($P/env | $P/cut -d= -f1 | $P/grep -iE 'KEY|SECRET|TOKEN|PASSW|CRED|^AWS_|BEARER' )
+line env_secrets "$(none_or "$env_secrets")"
+k=""; for f in ~/.aws ~/.ssh/id_rsa ~/.ssh/id_ed25519 ~/.ssh/id_ecdsa ~/.git-credentials ~/.netrc ~/.config/gh ~/.docker/config.json; do
+  [ -e "$f" ] && k="$k $f"; done
+line credential_files "$(none_or "$k")"
+line api_key_mode "$($P/stat -c %a ~/.config/anthropic-key 2>/dev/null || echo absent)"
+
+gw=$($P/ip -4 route | $P/awk '/^default/{print $3; exit}')
+reach() { $P/timeout 4 bash -c "</dev/tcp/$1/$2" 2>/dev/null && echo open || echo blocked; }
+o=""; for t in 169.254.169.254:80 "$gw:80" "$gw:8032" "$gw:22" 192.168.68.76:11434 10.0.0.1:80 172.17.0.1:80 100.100.100.100:53; do
+  [ "$(reach "${t%:*}" "${t#*:}")" = open ] && o="$o $t"; done
+line private_reachable "$(none_or "$o")"
+line internet "$(reach 1.1.1.1 443)"
+line auto_updates "$($P/systemctl is-enabled unattended-upgrades 2>/dev/null || echo off)"
+line kernel "$($P/uname -r)"

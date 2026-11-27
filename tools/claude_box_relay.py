@@ -20,8 +20,9 @@ It speaks the talker errand protocol (version 2, see talker/errands.py):
     POST /box/files/{trash|rename|mkdir|empty-trash}  {"path", "name"}
 
 How a task runs:
-  * Claude Code runs headless in the box (~/bin/cc-run: tmux window cc-<id>, auto
-    mode, its own API key, a per-job budget). Its ~/.claude/CLAUDE.md tells it the
+  * Claude Code runs headless in the box (/usr/local/bin/cc-run, root-owned; tmux window cc-<id> shows it; auto
+    mode, its own API key, a per-job budget). Its instructions (box/CLAUDE.md, installed
+    root-owned as /etc/clara-box/CLAUDE.md) tell it the
     answers are spoken, to clarify before starting when it must, and to begin a
     final answer with "QUESTION:" when it needs the owner. That becomes needs_input:
     Clara asks, and the answer resumes the same Claude Code session.
@@ -176,7 +177,7 @@ def _dollars(x: float) -> str:
 
 
 class BoxRunner:
-    """One Claude Code run in the box via ~/bin/cc-run. Returns its result JSON."""
+    """One Claude Code run in the box via /usr/local/bin/cc-run. Returns its result JSON."""
 
     def ssh(self) -> list:
         return ["ssh", "-i", os.environ.get("CLARA_BOX_KEY", str(BOX_DIR / "keys" / "clara")),
@@ -231,7 +232,7 @@ class BoxRunner:
             raise RuntimeError("refused: bad model or session id")   # both reach a shell in the box
         env = [f"CC_MODEL={model}", f"CC_BUDGET={budget:.2f}"] + ([f"CC_RESUME={session}"] if session else [])
         secs = minutes * 60
-        p = subprocess.run(self.ssh() + ["env"] + env + ["bin/cc-run", tid, str(secs)],
+        p = subprocess.run(self.ssh() + ["/usr/bin/env"] + env + ["/usr/local/bin/cc-run", tid, str(secs)],
                            input=prompt.encode(), capture_output=True, timeout=secs + 90)
         lines = (p.stdout or b"").decode("utf-8", "replace").strip().splitlines()
         try:

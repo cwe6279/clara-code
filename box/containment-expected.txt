@@ -1,0 +1,23 @@
+# What box/containment-probe must print inside Clara's box (run as clara).
+# tests/test_box_containment.py fails on any difference. Change a line only on purpose,
+# with the reason in the commit message.
+user clara
+groups clara
+sudo refused
+capeff 0000000000000000
+container_sockets none
+shared_mounts none
+devices_open none
+other_users none
+user_namespaces blocked
+ptrace_scope 1
+ssh_user_rc off
+ipv6 off
+code_changeable none
+runner_guards all
+env_secrets none
+credential_files none
+api_key_mode 600
+private_reachable none
+internet open
+auto_updates enabled

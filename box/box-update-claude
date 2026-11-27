@@ -1,0 +1,13 @@
+#!/bin/bash
+# box-update-claude: install or update Claude Code for Clara's jobs, root-owned.
+# Run in the box as admin (not clara):  ssh -p 2222 admin@127.0.0.1 box-update-claude
+# Uses Anthropic's installer (it checks the download's checksum) in admin's own home, then
+# copies the binary to /usr/local/bin/claude, where clara's jobs cannot change it. Jobs run
+# with DISABLE_AUTOUPDATER=1, so this is the only way Claude Code changes in the box.
+set -euo pipefail
+[ "$(id -un)" = clara ] && { echo "run this as admin, not clara"; exit 1; }
+curl -fsSL https://claude.ai/install.sh | bash -s -- "${1:-stable}" >/dev/null
+bin=$(readlink -f "$HOME/.local/bin/claude")
+sudo install -o root -g root -m 755 "$bin" /usr/local/bin/claude.new
+sudo mv /usr/local/bin/claude.new /usr/local/bin/claude
+echo "Claude Code for Clara's jobs: $(/usr/local/bin/claude --version)"

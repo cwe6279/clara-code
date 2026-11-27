@@ -9,16 +9,16 @@ to watch it, and how to build it. The files are in `box/`.
 ```
 you ──voice──> board ──> voice_loop.py (Clara) ──{{task …}}──> tools/claude_box_relay.py
                                                                       │ ssh, 127.0.0.1:2222
-                                                              clara-box VM: ~/bin/cc-run
+                                                              clara-box VM: /usr/local/bin/cc-run
                                                                       │
-                                                              claude -p (auto mode), tmux window cc-<id>
+                                                              claude -p --bare (auto mode); tmux window cc-<id> shows it
 ```
 
 1. Clara decides a request is a job and writes `{{task …}}` (her `errands` list in
    `faces/clara/face.json` says what she can hand off).
 2. `talker/errands.py` posts it to the relay and polls for the result.
-3. The relay (`tools/claude_box_relay.py`, port 8032) runs `~/bin/cc-run` in the box over SSH.
-   That starts Claude Code headless in a tmux window you can watch.
+3. The relay (`tools/claude_box_relay.py`, port 8032) runs `/usr/local/bin/cc-run` in the box
+   over SSH. That starts Claude Code headless; a tmux window shows the job as it runs.
 4. Claude Code's final answer comes back. Clara says it in her own words. If the answer starts
    with `QUESTION:`, she asks you, and your reply resumes the same Claude Code session.
 
@@ -114,10 +114,18 @@ Known limits, by design:
   allow-list to the LAN. It refuses requests made by other web pages (form posts, other
   origins, a foreign `Host`), so a site open in your browser cannot use it.
 - **A web page can mislead Claude Code.** It runs in auto mode and reads the web, so text on a
-  page can steer it. Inside the box that can waste money, read the box's API key or change the
-  box's own files (including `cc-run` and the costs it reports). It cannot reach your computer
-  or your network. This is why the key gets its own Console workspace and spend limit: that
-  limit holds even if everything in the box is compromised, and the ledger's caps do not.
+  page can steer it. Inside the box that can waste money, send the box's API key anywhere on
+  the internet, or change `clara`'s files (`~/work`, saved sessions). It cannot reach your
+  computer or your network. This is why the key gets its own Console workspace and spend
+  limit: that limit holds even if everything in the box is compromised.
+- **A misled job cannot change what later jobs run.** The runner (`/usr/local/bin/cc-run`),
+  Claude Code (`/usr/local/bin/claude`) and its instructions (`/etc/clara-box/CLAUDE.md`) are
+  owned by root. Jobs start with `--bare --setting-sources ""`, so hooks, plugins, settings
+  files and `CLAUDE.md` files in `clara`'s space are ignored, and under `setpriv
+  --no-new-privs`. The runner calls programs by full path and reads the result from Claude
+  Code's output, not from a file `clara` can edit; the tmux window only displays it. sshd
+  ignores `~/.ssh/rc`, and `ptrace_scope` 1 stops a process a job leaves behind from attaching
+  to the next job. Claude Code does not update itself: run `box-update-claude` as `admin`.
 - **Pages the box serves run in your browser** at `localhost:8100` to `8119`. Treat them like
   any page from the internet.
 
@@ -217,22 +225,22 @@ NET
 sudo chmod 600 /etc/netplan/50-cloud-init.yaml && sudo netplan apply
 sudo mkdir -p /workspace && sudo ln -sfn /home/clara/work /workspace/agent
 sudo loginctl enable-linger clara
-sudo install -m 755 box-app /usr/local/bin/        # copied in with scp first, as admin
+sudo install -m 755 box-app cc-run box-update-claude containment-probe /usr/local/bin/  # scp them in first
+sudo install -d /etc/clara-box && sudo install -m 644 CLAUDE.md /etc/clara-box/
+box-update-claude                                  # Claude Code, root-owned, for the jobs
 sudo install -m 644 box-app-sweep.service box-app-sweep.timer /etc/systemd/system/
 echo '{"ttl_hours": 24, "max_temporary": 5}' | sudo tee /etc/box-app.json
 sudo systemctl daemon-reload && sudo systemctl enable --now box-app-sweep.timer
 python3 -m venv /tmp/pw && /tmp/pw/bin/pip install playwright && sudo /tmp/pw/bin/playwright install-deps chromium
 ```
 
-Copy into the box as `clara` (`scp -P 2222 -i $D/keys/clara …`): `cc-run` to `~/bin/`,
-`tmux.conf` to `~/.tmux.conf`, `clara-tmux.service` to `~/.config/systemd/user/`, and
-`CLAUDE.md` to `~/.claude/CLAUDE.md`. Then, as `clara`:
+Copy into the box as `clara` (`scp -P 2222 -i $D/keys/clara …`): `tmux.conf` to
+`~/.tmux.conf` and `clara-tmux.service` to `~/.config/systemd/user/`. Then, as `clara`:
 
 ```bash
 mkdir -p ~/work && python3 -m venv ~/venv
 ~/venv/bin/pip install playwright pandas openpyxl pypdf pymupdf requests beautifulsoup4 lxml ddgs
 ~/venv/bin/playwright install chromium
-curl -fsSL https://claude.ai/install.sh | bash
 systemctl --user enable --now clara-tmux
 ```
 
@@ -242,6 +250,9 @@ On the host, copy `clara-box-launcher` to `~/.local/bin/clara-box`, and `clara-b
 
 ## Checks
 
-As `clara`, these should all fail: `sudo -n true`, `touch /etc/x`, a TCP connect to a
-`192.168.x.x` address or to the host. `curl https://deb.debian.org` should succeed.
-`tests/test_claude_box_relay.py` covers the relay without a VM.
+`tests/test_box_containment.py` runs `containment-probe` in the box as `clara` (read-only:
+user, capabilities, sockets, devices, user namespaces, ptrace, what `clara` can change, the
+runner's guards, secrets, which private addresses answer) and fails on any difference from
+`box/containment-expected.txt`. It also checks the host side: passt with `--no-map-gw`, the
+forwarded ports on `127.0.0.1` only, QEMU confined by SELinux. It is skipped when the box is
+not running. `tests/test_claude_box_relay.py` covers the relay without a VM.
